@@ -17,6 +17,8 @@ macro( apply_project_settings )
     add_compile_options(
         $<$<CXX_COMPILER_ID:MSVC>:/wd4996> # 'The POSIX name for this item is deprecated'
         $<$<CXX_COMPILER_ID:MSVC>:/wd4127> # 'Consider using 'if constexpr' statement instead'
+        $<$<CXX_COMPILER_ID:MSVC>:/wd4819> # Mixed legacy source encodings.
+        $<$<CXX_COMPILER_ID:MSVC>:/wd4828> # Mixed legacy source encodings when UTF-8 is requested.
     )
 
     # Some thirdparty code have Warnings as Errors disabled; this option won't override those.
