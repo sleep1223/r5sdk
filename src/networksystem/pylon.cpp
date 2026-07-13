@@ -23,6 +23,20 @@ ConVar pylon_auth_refresh_interval("pylon_auth_refresh_interval", "30", FCVAR_RE
 ConVar pylon_host_visibility("pylon_host_visibility", "0", FCVAR_RELEASE, "Determines the visibility to the Pylon master server", true, 0.f, true, 2.f, "0 = Offline, 1 = Hidden, 2 = Public");
 ConVar pylon_showdebuginfo("pylon_showdebuginfo", "0", FCVAR_RELEASE | FCVAR_ACCESSIBLE_FROM_THREADS, "Shows debug output for Pylon");
 
+void CPylon::CaptureRequestConfig(PylonRequestConfig_t& outConfig) const
+{
+    const char* const pszHostname = pylon_matchmaking_hostname.GetString();
+
+    outConfig.m_bEnabled = pylon_matchmaking_enabled.GetBool();
+    outConfig.m_bEulaUpToDate = IsEULAUpToDate();
+    outConfig.m_bOnlineAuthEnabled = sv_onlineAuthEnable.GetBool();
+    outConfig.m_svHostname = VALID_CHARSTAR(pszHostname) ? pszHostname : "";
+    outConfig.m_svLanguage = GetLanguage();
+    outConfig.m_nTimeout = curl_timeout.GetInt();
+    outConfig.m_bVerifyPeer = ssl_verify_peer.GetBool();
+    outConfig.m_bVerbose = curl_debug.GetBool();
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: checks if server listing fields are valid, and sets outGameServer
 // Input  : &value - 
@@ -55,7 +69,14 @@ static bool GetServerListingFromJSON(const rapidjson::Value& value, NetGameServe
 //-----------------------------------------------------------------------------
 bool CPylon::GetServerList(vector<NetGameServer_t>& outServerList, string& outMessage) const
 {
-    if (!IsEnabled())
+    PylonRequestConfig_t requestConfig;
+    CaptureRequestConfig(requestConfig);
+    return GetServerList(requestConfig, outServerList, outMessage);
+}
+
+bool CPylon::GetServerList(const PylonRequestConfig_t& requestConfig, vector<NetGameServer_t>& outServerList, string& outMessage) const
+{
+    if (!requestConfig.m_bEnabled)
     {
         SetDisabledMessage(outMessage);
         return false;
@@ -71,7 +92,7 @@ bool CPylon::GetServerList(vector<NetGameServer_t>& outServerList, string& outMe
     rapidjson::Document responseJson;
     CURLINFO status;
 
-    if (!SendRequest("/servers", requestJson, responseJson,
+    if (!SendRequest(requestConfig, "/servers", requestJson, responseJson,
         outMessage, status, "server list error"))
     {
         return false;
@@ -113,7 +134,15 @@ bool CPylon::GetServerList(vector<NetGameServer_t>& outServerList, string& outMe
 bool CPylon::GetServerByToken(NetGameServer_t& outGameServer,
     string& outMessage, const string& token) const
 {
-    if (!IsEnabled())
+    PylonRequestConfig_t requestConfig;
+    CaptureRequestConfig(requestConfig);
+    return GetServerByToken(requestConfig, outGameServer, outMessage, token);
+}
+
+bool CPylon::GetServerByToken(const PylonRequestConfig_t& requestConfig, NetGameServer_t& outGameServer,
+    string& outMessage, const string& token) const
+{
+    if (!requestConfig.m_bEnabled)
     {
         SetDisabledMessage(outMessage);
         return false;
@@ -129,7 +158,7 @@ bool CPylon::GetServerByToken(NetGameServer_t& outGameServer,
     rapidjson::Document responseJson;
     CURLINFO status;
 
-    if (!SendRequest("/server/byToken", requestJson, responseJson,
+    if (!SendRequest(requestConfig, "/server/byToken", requestJson, responseJson,
         outMessage, status, "server not found"))
     {
         return false;
@@ -164,7 +193,14 @@ bool CPylon::GetServerByToken(NetGameServer_t& outGameServer,
 //-----------------------------------------------------------------------------
 bool CPylon::PostServerHost(string& outMessage, string& outToken, CNetAdr& outHostIp, const NetGameServer_t& netGameServer) const
 {
-    if (!IsEnabled())
+    PylonRequestConfig_t requestConfig;
+    CaptureRequestConfig(requestConfig);
+    return PostServerHost(requestConfig, outMessage, outToken, outHostIp, netGameServer);
+}
+
+bool CPylon::PostServerHost(const PylonRequestConfig_t& requestConfig, string& outMessage, string& outToken, CNetAdr& outHostIp, const NetGameServer_t& netGameServer) const
+{
+    if (!requestConfig.m_bEnabled)
     {
         SetDisabledMessage(outMessage);
         return false;
@@ -188,12 +224,12 @@ bool CPylon::PostServerHost(string& outMessage, string& outToken, CNetAdr& outHo
     requestJson.AddMember("numPlayers",  netGameServer.numPlayers,                           allocator);
     requestJson.AddMember("maxPlayers",  netGameServer.maxPlayers,                           allocator);
     requestJson.AddMember("timeStamp",   netGameServer.timeStamp,                            allocator);
-    requestJson.AddMember("authEnabled", sv_onlineAuthEnable.GetBool(), allocator);
+    requestJson.AddMember("authEnabled", requestConfig.m_bOnlineAuthEnabled, allocator);
 
     rapidjson::Document responseJson;
     CURLINFO status;
 
-    if (!SendRequest("/servers/add", requestJson, responseJson, outMessage, status, "server host error", true, true))
+    if (!SendRequest(requestConfig, "/servers/add", requestJson, responseJson, outMessage, status, "server host error", true, true))
     {
         return false;
     }
@@ -238,7 +274,14 @@ bool CPylon::PostServerHost(string& outMessage, string& outToken, CNetAdr& outHo
 //-----------------------------------------------------------------------------
 bool CPylon::GetBannedList(const CBanSystem::BannedList_t& inBannedVec, CBanSystem::BannedList_t** outBannedVec) const
 {
-    if (!IsEnabled())
+    PylonRequestConfig_t requestConfig;
+    CaptureRequestConfig(requestConfig);
+    return GetBannedList(requestConfig, inBannedVec, outBannedVec);
+}
+
+bool CPylon::GetBannedList(const PylonRequestConfig_t& requestConfig, const CBanSystem::BannedList_t& inBannedVec, CBanSystem::BannedList_t** outBannedVec) const
+{
+    if (!requestConfig.m_bEnabled)
         return false;
 
     rapidjson::Document requestJson;
@@ -266,7 +309,7 @@ bool CPylon::GetBannedList(const CBanSystem::BannedList_t& inBannedVec, CBanSyst
     string outMessage;
     CURLINFO status;
 
-    if (!SendRequest("/banlist/bulkCheck", requestJson, responseJson, outMessage, status, "banned bulk check error", true, true))
+    if (!SendRequest(requestConfig, "/banlist/bulkCheck", requestJson, responseJson, outMessage, status, "banned bulk check error", true, true))
     {
         return false;
     }
@@ -319,7 +362,14 @@ bool CPylon::GetBannedList(const CBanSystem::BannedList_t& inBannedVec, CBanSyst
 //-----------------------------------------------------------------------------
 bool CPylon::CheckForBan(const string& ipAddress, const uint64_t nucleusId, const string& personaName, string& outReason, CBanSystem::Banned_t::BanType_e& outBanType, string& outExpiryTimestamp) const
 {
-    if (!IsEnabled())
+    PylonRequestConfig_t requestConfig;
+    CaptureRequestConfig(requestConfig);
+    return CheckForBan(requestConfig, ipAddress, nucleusId, personaName, outReason, outBanType, outExpiryTimestamp);
+}
+
+bool CPylon::CheckForBan(const PylonRequestConfig_t& requestConfig, const string& ipAddress, const uint64_t nucleusId, const string& personaName, string& outReason, CBanSystem::Banned_t::BanType_e& outBanType, string& outExpiryTimestamp) const
+{
+    if (!requestConfig.m_bEnabled)
     {
         SetDisabledMessage(outReason);
         return false;
@@ -338,7 +388,7 @@ bool CPylon::CheckForBan(const string& ipAddress, const uint64_t nucleusId, cons
     string outMessage;
     CURLINFO status;
 
-    if (!SendRequest("/banlist/isBanned", requestJson, responseJson, outMessage, status, "banned check error", true, true))
+    if (!SendRequest(requestConfig, "/banlist/isBanned", requestJson, responseJson, outMessage, status, "banned check error", true, true))
     {
         return false;
     }
@@ -385,7 +435,15 @@ bool CPylon::CheckForBan(const string& ipAddress, const uint64_t nucleusId, cons
 bool CPylon::AuthForConnection(const uint64_t nucleusId, const char* ipAddress,
     const char* authCode, string& outToken, string& outMessage) const
 {
-    if (!IsEnabled())
+    PylonRequestConfig_t requestConfig;
+    CaptureRequestConfig(requestConfig);
+    return AuthForConnection(requestConfig, nucleusId, ipAddress, authCode, outToken, outMessage);
+}
+
+bool CPylon::AuthForConnection(const PylonRequestConfig_t& requestConfig, const uint64_t nucleusId, const char* ipAddress,
+    const char* authCode, string& outToken, string& outMessage) const
+{
+    if (!requestConfig.m_bEnabled)
     {
         SetDisabledMessage(outMessage);
         return false;
@@ -404,7 +462,7 @@ bool CPylon::AuthForConnection(const uint64_t nucleusId, const char* ipAddress,
 
     CURLINFO status;
 
-    if (!SendRequest("/client/authenticate", requestJson, responseJson, outMessage, status, "origin auth error"))
+    if (!SendRequest(requestConfig, "/client/authenticate", requestJson, responseJson, outMessage, status, "origin auth error"))
     {
         return false;
     }
@@ -432,7 +490,15 @@ bool CPylon::AuthForConnection(const uint64_t nucleusId, const char* ipAddress,
 bool CPylon::AuthForConnection(const uint64_t nucleusId, const string& serverId,
     const char* authCode, string& outToken, MSConnectionInfo_t& outConnInfo, string& outMessage) const
 {
-    if (!IsEnabled())
+    PylonRequestConfig_t requestConfig;
+    CaptureRequestConfig(requestConfig);
+    return AuthForConnection(requestConfig, nucleusId, serverId, authCode, outToken, outConnInfo, outMessage);
+}
+
+bool CPylon::AuthForConnection(const PylonRequestConfig_t& requestConfig, const uint64_t nucleusId, const string& serverId,
+    const char* authCode, string& outToken, MSConnectionInfo_t& outConnInfo, string& outMessage) const
+{
+    if (!requestConfig.m_bEnabled)
     {
         SetDisabledMessage(outMessage);
         return false;
@@ -451,7 +517,7 @@ bool CPylon::AuthForConnection(const uint64_t nucleusId, const string& serverId,
 
     CURLINFO status;
 
-    if (!SendRequest("/client/authenticate", requestJson, responseJson, outMessage, status, "origin auth error"))
+    if (!SendRequest(requestConfig, "/client/authenticate", requestJson, responseJson, outMessage, status, "origin auth error"))
     {
         return false;
     }
@@ -485,7 +551,14 @@ bool CPylon::AuthForConnection(const uint64_t nucleusId, const string& serverId,
 //-----------------------------------------------------------------------------
 bool CPylon::GetEULA(MSEulaData_t& outData, string& outMessage) const
 {
-    if (!IsEnabled())
+    PylonRequestConfig_t requestConfig;
+    CaptureRequestConfig(requestConfig);
+    return GetEULA(requestConfig, outData, outMessage);
+}
+
+bool CPylon::GetEULA(const PylonRequestConfig_t& requestConfig, MSEulaData_t& outData, string& outMessage) const
+{
+    if (!requestConfig.m_bEnabled)
     {
         SetDisabledMessage(outMessage);
         return false;
@@ -497,7 +570,7 @@ bool CPylon::GetEULA(MSEulaData_t& outData, string& outMessage) const
     rapidjson::Document responseJson;
     CURLINFO status;
 
-    if (!SendRequest("/eula", requestJson, responseJson, outMessage, status, "eula fetch error", false))
+    if (!SendRequest(requestConfig, "/eula", requestJson, responseJson, outMessage, status, "eula fetch error", false))
     {
         return false;
     }
@@ -532,7 +605,14 @@ bool CPylon::GetEULA(MSEulaData_t& outData, string& outMessage) const
 //-----------------------------------------------------------------------------
 bool CPylon::GetAuthKey(const std::string& currentHash, MSAuthKeyData_t& outData, string& outMessage) const
 {
-    if (!IsEnabled())
+    PylonRequestConfig_t requestConfig;
+    CaptureRequestConfig(requestConfig);
+    return GetAuthKey(requestConfig, currentHash, outData, outMessage);
+}
+
+bool CPylon::GetAuthKey(const PylonRequestConfig_t& requestConfig, const std::string& currentHash, MSAuthKeyData_t& outData, string& outMessage) const
+{
+    if (!requestConfig.m_bEnabled)
     {
         SetDisabledMessage(outMessage);
         return false;
@@ -549,7 +629,7 @@ bool CPylon::GetAuthKey(const std::string& currentHash, MSAuthKeyData_t& outData
     rapidjson::Document responseJson;
     CURLINFO status;
 
-    if (!SendRequest("/server/auth/keyinfo", requestJson, responseJson, outMessage, status, "auth key fetch error", false))
+    if (!SendRequest(requestConfig, "/server/auth/keyinfo", requestJson, responseJson, outMessage, status, "auth key fetch error", false))
     {
         return false;
     }
@@ -591,7 +671,16 @@ bool CPylon::SendRequest(const char* endpoint, const rapidjson::Document& reques
     rapidjson::Document& responseJson, string& outMessage, CURLINFO& status,
     const char* errorText, const bool checkEula, const bool forceIPv4) const
 {
-    if (!IsDedicated() && !IsEULAUpToDate() && checkEula)
+    PylonRequestConfig_t requestConfig;
+    CaptureRequestConfig(requestConfig);
+    return SendRequest(requestConfig, endpoint, requestJson, responseJson, outMessage, status, errorText, checkEula, forceIPv4);
+}
+
+bool CPylon::SendRequest(const PylonRequestConfig_t& requestConfig, const char* endpoint, const rapidjson::Document& requestJson,
+    rapidjson::Document& responseJson, string& outMessage, CURLINFO& status,
+    const char* errorText, const bool checkEula, const bool forceIPv4) const
+{
+    if (!IsDedicated() && !requestConfig.m_bEulaUpToDate && checkEula)
     {
         outMessage = "EULA not accepted";
         return false;
@@ -601,7 +690,7 @@ bool CPylon::SendRequest(const char* endpoint, const rapidjson::Document& reques
     JSON_DocumentToBufferDeserialize(requestJson, stringBuffer);
 
     string responseBody;
-    if (!QueryServer(endpoint, stringBuffer.GetString(), responseBody, outMessage, status, forceIPv4))
+    if (!QueryServer(requestConfig, endpoint, stringBuffer.GetString(), responseBody, outMessage, status, forceIPv4))
     {
         return false;
     }
@@ -624,7 +713,7 @@ bool CPylon::SendRequest(const char* endpoint, const rapidjson::Document& reques
             return false;
         }
 
-        if (pylon_showdebuginfo.GetBool())
+        if (requestConfig.m_bVerbose)
         {
             LogBody(responseJson);
         }
@@ -658,11 +747,11 @@ bool CPylon::SendRequest(const char* endpoint, const rapidjson::Document& reques
 //          &outStatus   - 
 // Output : True on success, false on failure.
 //-----------------------------------------------------------------------------
-bool CPylon::QueryServer(const char* endpoint, const char* request,
+bool CPylon::QueryServer(const PylonRequestConfig_t& requestConfig, const char* endpoint, const char* request,
     string& outResponse, string& outMessage, CURLINFO& outStatus, const bool forceIPv4) const
 {
-    const bool showDebug = pylon_showdebuginfo.GetBool();
-    const char* hostName = pylon_matchmaking_hostname.GetString();
+    const bool showDebug = requestConfig.m_bVerbose;
+    const char* const hostName = requestConfig.m_svHostname.c_str();
 
     if (showDebug)
     {
@@ -672,14 +761,14 @@ bool CPylon::QueryServer(const char* endpoint, const char* request,
 
     string finalUrl;
     CURLFormatUrl(finalUrl, hostName, endpoint);
-    finalUrl += Format("?language=%s", this->GetLanguage().c_str());
+    finalUrl += Format("?language=%s", requestConfig.m_svLanguage.c_str());
 
     CURLParams params;
 
     params.writeFunction = CURLWriteStringCallback;
-    params.timeout = curl_timeout.GetInt();
-    params.verifyPeer = ssl_verify_peer.GetBool();
-    params.verbose = curl_debug.GetBool();
+    params.timeout = requestConfig.m_nTimeout;
+    params.verifyPeer = requestConfig.m_bVerifyPeer;
+    params.verbose = requestConfig.m_bVerbose;
     params.forceIPv4 = forceIPv4;
 
     curl_slist* sList = nullptr;

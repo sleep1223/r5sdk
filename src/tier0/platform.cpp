@@ -24,7 +24,7 @@ uint64_t Plat_MSTime()
 //-----------------------------------------------------------------------------
 const char* Plat_GetProcessUpTime()
 {
-	static char szBuf[4096];
+	static thread_local char szBuf[4096];
 	sprintf_s(szBuf, sizeof(szBuf), "[%.3f] ", v_Plat_FloatTime ? Plat_FloatTime() : 0.0);
 
 	return szBuf;

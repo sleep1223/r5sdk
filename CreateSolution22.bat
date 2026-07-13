@@ -1,15 +1,22 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-set BUILDDIR=build_intermediate
-set BINDIR=game
+set "ROOTDIR=%~dp0"
+set "BUILDDIR=build_intermediate"
+set "BINDIR=game"
+
+pushd "%ROOTDIR%" || exit /b 1
+set "PUSHD_DONE=1"
+
+call :read_build_version
+if errorlevel 1 goto :fail
 
 call :find_cmake
-if errorlevel 1 exit /b 1
+if errorlevel 1 goto :fail
 echo Using CMake: %CMAKE%
 
 call :select_generator
-if errorlevel 1 exit /b 1
+if errorlevel 1 goto :fail
 
 if not exist "%BUILDDIR%" (
   mkdir "%BUILDDIR%"
@@ -28,17 +35,65 @@ if exist "%BUILDDIR%\CMakeCache.txt" (
   if errorlevel 1 (
     set "CLEAR_CMAKE_CACHE=1"
   )
+  for /f "tokens=2 delims==" %%I in ('findstr /B /C:"CMAKE_GENERATOR_INSTANCE:INTERNAL=" "%BUILDDIR%\CMakeCache.txt" 2^>nul') do (
+    if not "%%~I"=="" (
+      if not exist "%%~I" (
+        set "CLEAR_CMAKE_CACHE=1"
+      )
+    )
+  )
   if "!CLEAR_CMAKE_CACHE!"=="1" (
-    echo Existing CMake cache uses another generator or platform; removing stale cache.
+    echo Existing CMake cache uses another generator, platform, or Visual Studio instance; removing stale cache.
     rmdir /s /q "%BUILDDIR%\CMakeFiles" >nul 2>nul
     del /q "%BUILDDIR%\CMakeCache.txt" >nul 2>nul
   )
 )
 
 "%CMAKE%" -S . -B "%BUILDDIR%" -G "%CMAKE_GENERATOR%" -A x64
-if errorlevel 1 exit /b 1
+if errorlevel 1 goto :fail
 
-echo Finished generating solution files.
+call :write_solution_manifest
+if errorlevel 1 goto :fail
+
+echo Finished generating solution files for source version %SDK_BUILD_VERSION%.
+goto :success
+
+:success
+set "EXITCODE=0"
+goto :finish
+
+:fail
+set "EXITCODE=1"
+goto :finish
+
+:finish
+if defined PUSHD_DONE popd
+endlocal & exit /b %EXITCODE%
+
+:read_build_version
+set "SDK_BUILD_VERSION="
+if not exist "src\core\build_version.h" (
+  echo Could not find src\core\build_version.h.
+  exit /b 1
+)
+for /f "tokens=2 delims==" %%V in ('findstr /C:"SDK_INTERNAL_BUILD_NUMBER" "src\core\build_version.h"') do (
+  set "SDK_BUILD_VERSION=%%V"
+)
+set "SDK_BUILD_VERSION=!SDK_BUILD_VERSION: =!"
+set "SDK_BUILD_VERSION=!SDK_BUILD_VERSION:u=!"
+set "SDK_BUILD_VERSION=!SDK_BUILD_VERSION:;=!"
+if not defined SDK_BUILD_VERSION (
+  echo Could not read SDK_INTERNAL_BUILD_NUMBER from src\core\build_version.h.
+  exit /b 1
+)
+exit /b 0
+
+:write_solution_manifest
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$buildDir = Join-Path (Get-Location) $env:BUILDDIR; $manifest = [ordered]@{ version = [int64]$env:SDK_BUILD_VERSION; source_version = [int64]$env:SDK_BUILD_VERSION; generator = $env:CMAKE_GENERATOR; platform = 'x64'; build_dir = (Resolve-Path -LiteralPath $buildDir).Path; generated_at = (Get-Date).ToString('o') }; $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $buildDir '.solution_manifest.json') -Encoding UTF8"
+if errorlevel 1 (
+  echo Failed to write solution manifest.
+  exit /b 1
+)
 exit /b 0
 
 :find_cmake

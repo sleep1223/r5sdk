@@ -2,6 +2,7 @@
 #ifndef _TOOLS
 #include "tier0/commandline.h"
 #endif // !_TOOLS
+#include "core/build_version.h"
 #include "init.h"
 #include "logdef.h"
 #include "logger.h"
@@ -17,6 +18,180 @@
 #endif // !_TOOLS
 static const boost::regex s_AnsiRowRegex(R"(\x1b\[[\d;]+m)");
 static std::mutex s_LogMutex;
+static std::mutex s_DiagnosticFileMutex;
+
+static void SDK_EnsureDiagnosticDirectoryExists(const string& svDirectory)
+{
+	if (svDirectory.empty())
+		return;
+
+	string svPath = svDirectory;
+	for (char& ch : svPath)
+	{
+		if (ch == '/')
+			ch = '\\';
+	}
+
+	size_t nStart = 0;
+	if (svPath.length() > 2 && svPath[1] == ':')
+		nStart = 3;
+
+	for (size_t i = nStart; i < svPath.length(); i++)
+	{
+		if (svPath[i] != '\\')
+			continue;
+
+		const string svPartial = svPath.substr(0, i);
+		if (!svPartial.empty())
+			CreateDirectoryA(svPartial.c_str(), nullptr);
+	}
+
+	CreateDirectoryA(svPath.c_str(), nullptr);
+}
+
+static string SDK_FormatDiagnosticTimestamp()
+{
+	SYSTEMTIME time;
+	GetLocalTime(&time);
+
+	char szTimestamp[64];
+	V_snprintf(szTimestamp, sizeof(szTimestamp), "%04hu%02hu%02hu_%02hu%02hu%02hu_%03hu",
+		time.wYear, time.wMonth, time.wDay,
+		time.wHour, time.wMinute, time.wSecond, time.wMilliseconds);
+
+	return szTimestamp;
+}
+
+static string SDK_GetDiagnosticLogDirectory()
+{
+	return g_LogSessionDirectory.empty()
+		? "platform/logs"
+		: g_LogSessionDirectory;
+}
+
+static void SDK_WriteDiagnosticTextFile(const string& svPath, const string& svText)
+{
+	const HANDLE hFile = CreateFileA(svPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+		nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (hFile == INVALID_HANDLE_VALUE)
+		return;
+
+	DWORD nWritten = 0;
+	WriteFile(hFile, svText.c_str(), static_cast<DWORD>(svText.length()), &nWritten, nullptr);
+	FlushFileBuffers(hFile);
+	CloseHandle(hFile);
+}
+
+static void SDK_AppendDiagnosticTextFile(const string& svPath, const string& svText)
+{
+	std::lock_guard<std::mutex> lock(s_DiagnosticFileMutex);
+
+	const HANDLE hFile = CreateFileA(svPath.c_str(), FILE_APPEND_DATA,
+		FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+		FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (hFile == INVALID_HANDLE_VALUE)
+		return;
+
+	DWORD nWritten = 0;
+	WriteFile(hFile, svText.c_str(), static_cast<DWORD>(svText.length()), &nWritten, nullptr);
+	FlushFileBuffers(hFile);
+	CloseHandle(hFile);
+}
+
+void SDK_AppendDiagnosticLogFile(const char* pszFileName, const char* pszText)
+{
+	if (!VALID_CHARSTAR(pszFileName) || !VALID_CHARSTAR(pszText))
+		return;
+
+	const string svLogDirectory = SDK_GetDiagnosticLogDirectory();
+	SDK_EnsureDiagnosticDirectoryExists(svLogDirectory);
+
+	const string svPath = Format("%s/%s", svLogDirectory.c_str(), pszFileName);
+	SDK_AppendDiagnosticTextFile(svPath, pszText);
+}
+
+void SDK_WriteProcessExitDiagnostic(const char* pszSource, const UINT exitCode, const char* pszDetail)
+{
+	const string svLogDirectory = SDK_GetDiagnosticLogDirectory();
+
+	SDK_EnsureDiagnosticDirectoryExists(svLogDirectory);
+
+	char szModule[MAX_PATH];
+	if (!GetModuleFileNameA(nullptr, szModule, sizeof(szModule)))
+		szModule[0] = '\0';
+
+	const string svTimestamp = SDK_FormatDiagnosticTimestamp();
+	const DWORD nProcessId = GetCurrentProcessId();
+	const DWORD nThreadId = GetCurrentThreadId();
+
+	const string svText = Format(
+		"process_exit:\n"
+		"{\n"
+		"\ttime: %s\n"
+		"\tsource: %s\n"
+		"\texit_code: %u // 0x%08X\n"
+		"\tinternal_build: %u\n"
+		"\tprocess_id: %lu\n"
+		"\tthread_id: %lu\n"
+		"\tsession_id: %s\n"
+		"\tlog_dir: %s\n"
+		"\tmodule: %s\n"
+		"\tcommand_line: %s\n"
+		"\tdetail: %s\n"
+		"}\n",
+		svTimestamp.c_str(),
+		VALID_CHARSTAR(pszSource) ? pszSource : "unknown",
+		exitCode, exitCode,
+		SDK_INTERNAL_BUILD_NUMBER,
+		nProcessId, nThreadId,
+		g_LogSessionUUID.empty() ? "<unset>" : g_LogSessionUUID.c_str(),
+		svLogDirectory.c_str(),
+		VALID_CHARSTAR(szModule) ? szModule : "<unknown>",
+		VALID_CHARSTAR(GetCommandLineA()) ? GetCommandLineA() : "<unknown>",
+		VALID_CHARSTAR(pszDetail) ? pszDetail : "");
+
+	const string svLatestPath = Format("%s/%s.txt", svLogDirectory.c_str(), "process_exit");
+	const string svStampedPath = Format("%s/%s_%s_%lu_%lu.txt",
+		svLogDirectory.c_str(), "process_exit", svTimestamp.c_str(),
+		nProcessId, nThreadId);
+
+	SDK_WriteDiagnosticTextFile(svStampedPath, svText);
+	SDK_WriteDiagnosticTextFile(svLatestPath, svText);
+}
+
+void SDK_WriteRuntimeBreadcrumb(const char* pszSource, const char* pszDetail)
+{
+	const string svLogDirectory = SDK_GetDiagnosticLogDirectory();
+
+	SDK_EnsureDiagnosticDirectoryExists(svLogDirectory);
+
+	const string svTimestamp = SDK_FormatDiagnosticTimestamp();
+	const DWORD nProcessId = GetCurrentProcessId();
+	const DWORD nThreadId = GetCurrentThreadId();
+
+	const string svText = Format(
+		"runtime_breadcrumb:\n"
+		"{\n"
+		"\ttime: %s\n"
+		"\tinternal_build: %u\n"
+		"\tsource: %s\n"
+		"\tprocess_id: %lu\n"
+		"\tthread_id: %lu\n"
+		"\tsession_id: %s\n"
+		"\tlog_dir: %s\n"
+		"\tdetail: %s\n"
+		"}\n",
+		svTimestamp.c_str(),
+		SDK_INTERNAL_BUILD_NUMBER,
+		VALID_CHARSTAR(pszSource) ? pszSource : "unknown",
+		nProcessId, nThreadId,
+		g_LogSessionUUID.empty() ? "<unset>" : g_LogSessionUUID.c_str(),
+		svLogDirectory.c_str(),
+		VALID_CHARSTAR(pszDetail) ? pszDetail : "");
+
+	const string svLatestPath = Format("%s/%s.txt", svLogDirectory.c_str(), "runtime_breadcrumb");
+	SDK_WriteDiagnosticTextFile(svLatestPath, svText);
+}
 
 #if !defined (DEDICATED) && !defined (_TOOLS)
 ImVec4 CheckForWarnings(LogType_t type, eDLL_T context, const ImVec4& defaultCol)
@@ -367,6 +542,18 @@ void EngineLoggerSink(LogType_t logType, LogLevel_t logLevel, eDLL_T context,
 
 	if (exitCode) // Terminate the process if an exit code was passed.
 	{
+		SDK_WriteProcessExitDiagnostic("EngineLoggerSink/Error", exitCode, formatted.c_str());
+
+#ifndef _TOOLS
+		if (ntlogger)
+			ntlogger->flush();
+		if (g_TermLogger)
+			g_TermLogger->flush();
+#else
+		if (g_SuppementalToolsLogger)
+			g_SuppementalToolsLogger->flush();
+#endif
+
 #ifndef _TOOLS
 		if (!CommandLine()->CheckParm("-nomessagebox"))
 #endif // !_TOOLS

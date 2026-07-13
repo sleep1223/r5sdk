@@ -12,27 +12,28 @@
 //-----------------------------------------------------------------------------
 void CFrameTask::RunFrame()
 {
-    AUTO_LOCK(m_Mutex);
+    std::vector<std::function<void()>> readyTasks;
 
-    for (QueuedTasks_s& delay : m_QueuedTasks)
     {
-        if (delay.m_nDelayedFrames == 0)
+        AUTO_LOCK(m_Mutex);
+
+        for (auto it = m_QueuedTasks.begin(); it != m_QueuedTasks.end();)
         {
-            delay.m_rFunctor();
-        }
-        else
-        {
-            --delay.m_nDelayedFrames;
+            if (it->m_nDelayedFrames == 0)
+            {
+                readyTasks.emplace_back(std::move(it->m_rFunctor));
+                it = m_QueuedTasks.erase(it);
+            }
+            else
+            {
+                --it->m_nDelayedFrames;
+                ++it;
+            }
         }
     }
 
-    const auto newEnd = std::remove_if(m_QueuedTasks.begin(), m_QueuedTasks.end(),
-        [](const QueuedTasks_s& delay)
-        {
-            return delay.m_nDelayedFrames == 0;
-        });
-
-    m_QueuedTasks.erase(newEnd, m_QueuedTasks.end());
+    for (const std::function<void()>& task : readyTasks)
+        task();
 }
 
 //-----------------------------------------------------------------------------

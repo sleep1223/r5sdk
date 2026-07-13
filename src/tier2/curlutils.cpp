@@ -235,6 +235,8 @@ CURL* CURLInitRequest(const char* remote, const char* request,
     CURL* curl = EasyInit();
     if (!curl)
     {
+        curl_slist_free_all(slist);
+        slist = nullptr;
         return nullptr;
     }
 
@@ -254,6 +256,7 @@ CURLcode CURLSubmitRequest(CURL* curl, curl_slist*& slist)
 {
     CURLcode res = curl_easy_perform(curl);
     curl_slist_free_all(slist);
+    slist = nullptr;
 
     return res;
 }

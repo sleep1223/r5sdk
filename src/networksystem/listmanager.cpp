@@ -35,10 +35,17 @@ CServerListManager::CServerListManager(void)
 //-----------------------------------------------------------------------------
 bool CServerListManager::RefreshServerList(string& outMessage, size_t& numServers)
 {
+    PylonRequestConfig_t requestConfig;
+    g_MasterServer.CaptureRequestConfig(requestConfig);
+    return RefreshServerList(requestConfig, outMessage, numServers);
+}
+
+bool CServerListManager::RefreshServerList(const PylonRequestConfig_t& requestConfig, string& outMessage, size_t& numServers)
+{
     ClearServerList();
 
     vector<NetGameServer_t> serverList;
-    const bool success = g_MasterServer.GetServerList(serverList, outMessage);
+    const bool success = g_MasterServer.GetServerList(requestConfig, serverList, outMessage);
 
     if (!success)
         return false;
@@ -121,10 +128,12 @@ static ConVar cl_onlineAuthTokenSignature2("cl_onlineAuthTokenSignature2", "", F
 bool ServerList_SetTokenCVars(const string& msToken)
 {
     // get full token
-    const char* token = msToken.c_str();
+    vector<char> tokenBuffer(msToken.begin(), msToken.end());
+    tokenBuffer.push_back('\0');
+    char* const token = tokenBuffer.data();
 
     // get a pointer to the delimiter that begins the token's signature
-    const char* tokenSignatureDelim = strrchr(token, '.');
+    char* const tokenSignatureDelim = strrchr(token, '.');
 
     if (!tokenSignatureDelim)
     {
@@ -135,7 +144,7 @@ bool ServerList_SetTokenCVars(const string& msToken)
 
     const size_t sigLength = strlen(tokenSignatureDelim + 1);
     // replace the delimiter with a null char so the first cvar only takes the header and payload data
-    *(char*)tokenSignatureDelim = '\0';
+    *tokenSignatureDelim = '\0';
 
     cl_onlineAuthToken.SetValue(token);
 
@@ -145,6 +154,7 @@ bool ServerList_SetTokenCVars(const string& msToken)
         const char* tokenSignaturePart1 = tokenSignatureDelim + 1;
 
         cl_onlineAuthTokenSignature1.SetValue(tokenSignaturePart1);
+        cl_onlineAuthTokenSignature2.SetValue("");
 
         if (sigLength > 255)
         {
@@ -162,29 +172,37 @@ void CServerListManager::ConnectToServerById(string svId) const
 {
     ImGui::InsertNotification({ ImGuiToastType::Info, 3000, "Connecting..." });
 
-    std::thread request([this, svId = std::move(svId)] {
-        string msToken;
-        string message;
-        MSConnectionInfo_t connInfo;
+    PylonRequestConfig_t requestConfig;
+    g_MasterServer.CaptureRequestConfig(requestConfig);
 
-        const string authCode = cl_onlineAuthEnable.GetBool() ? g_OriginAuthCode : "";
-        const bool bSuccess = g_MasterServer.AuthForConnection(*g_NucleusID, svId, authCode.c_str(), msToken, connInfo, message);
+    const string serverIdCopy(svId);
+    const NucleusID_t nucleusId = *g_NucleusID;
+    const string authCode = cl_onlineAuthEnable.GetBool() ? g_OriginAuthCode : "";
 
-        g_TaskQueue.Dispatch([this, bSuccess, message = std::move(message), connInfo = std::move(connInfo), msToken = std::move(msToken)] {
-            
-            ServerList_SetTokenCVars(msToken);
+    std::thread request([this, requestConfig, serverIdCopy, nucleusId, authCode]
+        {
+            string msToken;
+            string message;
+            MSConnectionInfo_t connInfo;
 
-            if (!bSuccess)
+            if (!g_MasterServer.AuthForConnection(requestConfig, nucleusId, serverIdCopy, authCode.c_str(), msToken, connInfo, message))
             {
                 Error(eDLL_T::MS, ERROR_SUCCESS, "ConnectToServer: %s\n", message.c_str());
-                ImGui::InsertNotification({ ImGuiToastType::Error, 5000, "Failed to connect!\n%s", message.c_str() });
+
+                g_TaskQueue.Dispatch([message]
+                    {
+                        ImGui::InsertNotification({ ImGuiToastType::Error, 5000, "Failed to connect!\n%s", message.c_str() });
+                    }, 0);
                 return;
             }
 
-            this->ConnectToServer(connInfo.addr, connInfo.port, connInfo.key);
-        
-        }, 0);
-    });
+            g_TaskQueue.Dispatch([this, connInfo, msToken]
+                {
+                    ServerList_SetTokenCVars(msToken);
+                    this->ConnectToServer(connInfo.addr, connInfo.port, connInfo.key);
+                }, 0);
+        }
+    );
 
     request.detach();
 }

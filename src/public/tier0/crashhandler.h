@@ -86,8 +86,9 @@ private:
 	// Internals: 
 	//-------------------------------------------------------------------------
 	void FormatExceptionAddress();
-	void FormatExceptionAddress(const LPCSTR pExceptionAddress);
+	void FormatExceptionAddress(const LPCSTR pExceptionAddress, const bool bSetCrashModule = true);
 	void FormatExceptionCode();
+	void FormatSymbolInfo(const DWORD64 nAddress);
 
 	void FormatALU(const char* const pszRegister, const DWORD64 nContent);
 	void FormatFPU(const char* const pszRegister, const M128A* const pxContent);

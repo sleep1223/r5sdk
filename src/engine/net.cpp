@@ -261,12 +261,18 @@ void NET_PrintFunc(const char* fmt, ...)
 void NET_RemoveChannel(CClient* pClient, int nIndex, const char* szReason, uint8_t bBadRep, bool bRemoveNow)
 {
 #ifndef CLIENT_DLL
-	if (!pClient || std::strlen(szReason) == NULL || !pClient->GetNetChan())
+	if (!pClient || !VALID_CHARSTAR(szReason))
 	{
 		return;
 	}
 
-	pClient->GetNetChan()->Shutdown(szReason, bBadRep, bRemoveNow); // Shutdown NetChannel.
+	CNetChan* const pNetChan = pClient->GetNetChan();
+	if (!pNetChan)
+	{
+		return;
+	}
+
+	pNetChan->Shutdown(szReason, bBadRep, bRemoveNow);              // Shutdown NetChannel.
 	pClient->Clear();                                               // Reset CClient slot.
 #endif // !CLIENT_DLL
 }

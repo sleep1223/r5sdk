@@ -31,23 +31,46 @@ struct MSConnectionInfo_t
 	int port;
 };
 
+struct PylonRequestConfig_t
+{
+	bool   m_bEnabled = false;
+	bool   m_bEulaUpToDate = true;
+	bool   m_bOnlineAuthEnabled = false;
+	string m_svHostname;
+	string m_svLanguage;
+	int    m_nTimeout = 15;
+	bool   m_bVerifyPeer = true;
+	bool   m_bVerbose = false;
+};
+
 class CPylon
 {
 public:
 	CPylon() { SetLanguage(g_LanguageNames[0]); }
 
+	void CaptureRequestConfig(PylonRequestConfig_t& outConfig) const;
+
 	bool GetServerList(vector<NetGameServer_t>& outServerList, string& outMessage) const;
+	bool GetServerList(const PylonRequestConfig_t& requestConfig, vector<NetGameServer_t>& outServerList, string& outMessage) const;
 	bool GetServerByToken(NetGameServer_t& slOutServer, string& outMessage, const string& svToken) const;
+	bool GetServerByToken(const PylonRequestConfig_t& requestConfig, NetGameServer_t& slOutServer, string& outMessage, const string& svToken) const;
 	bool PostServerHost(string& outMessage, string& svOutToken, CNetAdr& outHostIp, const NetGameServer_t& netGameServer) const;
+	bool PostServerHost(const PylonRequestConfig_t& requestConfig, string& outMessage, string& svOutToken, CNetAdr& outHostIp, const NetGameServer_t& netGameServer) const;
 
 	bool GetBannedList(const CBanSystem::BannedList_t& inBannedVec, CBanSystem::BannedList_t** outBannedVec) const;
+	bool GetBannedList(const PylonRequestConfig_t& requestConfig, const CBanSystem::BannedList_t& inBannedVec, CBanSystem::BannedList_t** outBannedVec) const;
 	bool CheckForBan(const string& ipAddress, const uint64_t nucleusId, const string& personaName, string& outReason, CBanSystem::Banned_t::BanType_e& outBanType, string& outExpiryTimestamp) const;
+	bool CheckForBan(const PylonRequestConfig_t& requestConfig, const string& ipAddress, const uint64_t nucleusId, const string& personaName, string& outReason, CBanSystem::Banned_t::BanType_e& outBanType, string& outExpiryTimestamp) const;
 
 	bool AuthForConnection(const uint64_t nucleusId, const char* ipAddress, const char* authCode, string& outToken, string& outMessage) const;
+	bool AuthForConnection(const PylonRequestConfig_t& requestConfig, const uint64_t nucleusId, const char* ipAddress, const char* authCode, string& outToken, string& outMessage) const;
 	bool AuthForConnection(const uint64_t nucleusId, const string& serverId, const char* authCode, string& outToken, MSConnectionInfo_t& outConnInfo, string& outMessage) const;
+	bool AuthForConnection(const PylonRequestConfig_t& requestConfig, const uint64_t nucleusId, const string& serverId, const char* authCode, string& outToken, MSConnectionInfo_t& outConnInfo, string& outMessage) const;
 
 	bool GetEULA(MSEulaData_t& outData, string& outMessage) const;
+	bool GetEULA(const PylonRequestConfig_t& requestConfig, MSEulaData_t& outData, string& outMessage) const;
 	bool GetAuthKey(const std::string& currentHash, MSAuthKeyData_t& outData, string& outMessage) const;
+	bool GetAuthKey(const PylonRequestConfig_t& requestConfig, const std::string& currentHash, MSAuthKeyData_t& outData, string& outMessage) const;
 	bool IsEnabled() const;
 
 	inline void SetLanguage(const char* lang)
@@ -55,7 +78,7 @@ public:
 		AUTO_LOCK(m_StringMutex);
 		m_Language = lang;
 	};
-	inline const string& GetLanguage() const
+	inline string GetLanguage() const
 	{
 		AUTO_LOCK(m_StringMutex);
 		return m_Language;
@@ -67,7 +90,8 @@ private:
 
 	void LogBody(const rapidjson::Document& responseJson) const;
 	bool SendRequest(const char* endpoint, const rapidjson::Document& requestJson, rapidjson::Document& responseJson, string& outMessage, CURLINFO& status, const char* errorText = nullptr, const bool checkEula = true, const bool forceIPv4 = false) const;
-	bool QueryServer(const char* endpoint, const char* request, string& outResponse, string& outMessage, CURLINFO& outStatus, const bool forceIPv4 = false) const;
+	bool SendRequest(const PylonRequestConfig_t& requestConfig, const char* endpoint, const rapidjson::Document& requestJson, rapidjson::Document& responseJson, string& outMessage, CURLINFO& status, const char* errorText = nullptr, const bool checkEula = true, const bool forceIPv4 = false) const;
+	bool QueryServer(const PylonRequestConfig_t& requestConfig, const char* endpoint, const char* request, string& outResponse, string& outMessage, CURLINFO& outStatus, const bool forceIPv4 = false) const;
 
 	void SetDisabledMessage(string& outMsg) const;
 

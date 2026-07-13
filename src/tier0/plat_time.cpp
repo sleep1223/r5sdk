@@ -92,7 +92,7 @@ uint64 Plat_USTime()
 
 const char* Plat_GetProcessUpTime()
 {
-	static char szBuf[4096];
+	static thread_local char szBuf[4096];
 	sprintf_s(szBuf, sizeof(szBuf), TIMER_FORMAT, Plat_FloatTime());
 
 	return szBuf;

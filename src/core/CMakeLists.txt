@@ -17,6 +17,7 @@ endif()
 
 add_sources( SOURCE_GROUP "Core"
     "assert.h"
+    "build_version.h"
     "dllmain.cpp"
     "init.cpp"
     "init.h"

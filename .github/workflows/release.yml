@@ -53,6 +53,13 @@ jobs:
                   if (Test-Path $staging) { Remove-Item -Path $staging -Recurse -Force }
                   if (Test-Path $symbols_staging) { Remove-Item -Path $symbols_staging -Recurse -Force }
 
+                  $sdkScripts = "${{github.workspace}}/src/resource/vscripts"
+                  $gameScripts = "${{github.workspace}}/game/platform/scripts/vscripts"
+                  if (Test-Path $sdkScripts) {
+                      New-Item -ItemType Directory -Path $gameScripts -Force | Out-Null
+                      Copy-Item -Path "$sdkScripts/*" -Destination $gameScripts -Recurse -Force
+                  }
+
                   Copy-Item -Path "${{github.workspace}}/game" -Destination $staging -Recurse
                   New-Item -ItemType Directory -Path $symbols_staging
 

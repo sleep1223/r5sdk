@@ -1,5 +1,6 @@
 #include "core/stdafx.h"
 #include "core/init.h"
+#include "core/logger.h"
 #include "windows/system.h"
 #include "engine/host_state.h"
 #include "tier0/frametask.h"
@@ -279,16 +280,35 @@ WINAPI
 ConsoleHandlerRoutine(
 	DWORD eventCode)
 {
+	const char* pszEventName = nullptr;
+
 	switch (eventCode)
 	{
 	case CTRL_C_EVENT:
+		pszEventName = "CTRL_C_EVENT";
+		break;
 	case CTRL_BREAK_EVENT:
+		pszEventName = "CTRL_BREAK_EVENT";
+		break;
 	case CTRL_CLOSE_EVENT:
+		pszEventName = "CTRL_CLOSE_EVENT";
+		break;
 	case CTRL_LOGOFF_EVENT:
+		pszEventName = "CTRL_LOGOFF_EVENT";
+		break;
 	case CTRL_SHUTDOWN_EVENT:
-		
+		pszEventName = "CTRL_SHUTDOWN_EVENT";
+		break;
+	default:
+		break;
+	}
+
+	if (pszEventName)
+	{
 		if (!g_bSdkShutdownInitiatedFromConsoleHandler)
 			g_bSdkShutdownInitiatedFromConsoleHandler = true;
+
+		SDK_WriteProcessExitDiagnostic("ConsoleHandlerRoutine", 0, pszEventName);
 
 		if (g_pHostState) // This tells the engine to gracefully shutdown on the next frame.
 			g_pHostState->m_iNextState = HostStates_t::HS_SHUTDOWN;

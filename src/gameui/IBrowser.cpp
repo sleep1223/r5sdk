@@ -396,16 +396,19 @@ void CBrowser::DrawBrowserPanel(void)
 //-----------------------------------------------------------------------------
 void CBrowser::RefreshServerList(void)
 {
-    Msg(eDLL_T::CLIENT, "Refreshing server list with matchmaking host '%s'\n", pylon_matchmaking_hostname.GetString());
+    PylonRequestConfig_t requestConfig;
+    g_MasterServer.CaptureRequestConfig(requestConfig);
+
+    Msg(eDLL_T::CLIENT, "Refreshing server list with matchmaking host '%s'\n", requestConfig.m_svHostname.c_str());
 
     // Thread the request, and let the main thread assign status message back
-    std::thread request([&]
+    std::thread request([this, requestConfig]
         {
             std::string serverListMessage;
             size_t numServers;
-            g_ServerListManager.RefreshServerList(serverListMessage, numServers);
+            g_ServerListManager.RefreshServerList(requestConfig, serverListMessage, numServers);
 
-            g_TaskQueue.Dispatch([&, serverListMessage]
+            g_TaskQueue.Dispatch([this, serverListMessage]
                 {
                     SetServerListMessage(serverListMessage.c_str());
                 }, 0);
@@ -829,15 +832,18 @@ void CBrowser::UpdateHostingStatus(void)
 void CBrowser::SendHostingPostRequest(NetGameServer_t& gameServer)
 {
 #ifndef CLIENT_DLL
-    std::thread request([&, gameServer = std::move(gameServer)]
+    PylonRequestConfig_t requestConfig;
+    g_MasterServer.CaptureRequestConfig(requestConfig);
+
+    std::thread request([this, requestConfig, gameServer = std::move(gameServer)]
         {
             string hostRequestMessage;
             string hostToken;
             CNetAdr hostIp;
 
-            const bool result = g_MasterServer.PostServerHost(hostRequestMessage, hostToken, hostIp, gameServer);
+            const bool result = g_MasterServer.PostServerHost(requestConfig, hostRequestMessage, hostToken, hostIp, gameServer);
 
-            g_TaskQueue.Dispatch([&, result, hostRequestMessage, hostToken, hostIp]
+            g_TaskQueue.Dispatch([this, result, hostRequestMessage, hostToken, hostIp]
                 {
                     InstallHostingDetails(result, hostRequestMessage, hostToken, hostIp);
                 }, 0);
@@ -860,10 +866,13 @@ void CBrowser::InstallHostingDetails(const bool postFailed, const string& hostMe
     m_hostMessage = hostMessage;
     m_hostToken = hostToken;
 
-    g_ServerHostManager.SetHostIP(hostIp);
-
     if (postFailed)
     {
+        if (hostIp.GetType() == netadrtype_t::NA_IP && hostIp.GetPort() != 0)
+        {
+            g_ServerHostManager.SetHostIP(hostIp);
+        }
+
         m_hostMessageColor = ImVec4(0.00f, 1.00f, 0.00f, 1.00f);
 
         m_hostMessage = m_hostToken.empty()

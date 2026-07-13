@@ -94,6 +94,11 @@ bool Console_Init(const bool bAnsiColor)
 		return false;
 	}
 
+	// Remote API text is UTF-8. Keep the debug console from decoding it as the
+	// system OEM code page, which corrupts Chinese messages on many servers.
+	SetConsoleCP(CP_UTF8);
+	SetConsoleOutputCP(CP_UTF8);
+
 #ifndef _TOOLS
 	//-- Set the window title
 	SetConsoleTitleA("R5");

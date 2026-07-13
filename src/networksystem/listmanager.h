@@ -2,18 +2,21 @@
 #define LISTMANAGER_H
 #include <networksystem/serverlisting.h>
 
+struct PylonRequestConfig_t;
+
 class CServerListManager
 {
 public:
 	CServerListManager();
 
 	bool RefreshServerList(string& outMessage, size_t& numServers);
+	bool RefreshServerList(const PylonRequestConfig_t& requestConfig, string& outMessage, size_t& numServers);
 	void ClearServerList(void);
 
 	void ConnectToServer(const string& svIp, const int nPort, const string& svNetKey) const;
 	void ConnectToServer(const string& svServer, const string& svNetKey) const;
 
-	void ConnectToServerById(const string svId) const;
+	void ConnectToServerById(string svId) const;
 
 	// TODO: make private!
 	vector<NetGameServer_t> m_vServerList;

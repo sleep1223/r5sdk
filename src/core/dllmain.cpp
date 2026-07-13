@@ -1,5 +1,6 @@
 ﻿#include "core/stdafx.h"
 #include "core/r5dev.h"
+#include "core/build_version.h"
 #include "core/init.h"
 #include "core/logdef.h"
 #include "core/logger.h"
@@ -8,6 +9,9 @@
 #include "tier0/crashhandler.h"
 #include "tier0/commandline.h"
 #include "tier2/crashreporter.h"
+#ifndef CLIENT_DLL
+#include "networksystem/remoteapi.h"
+#endif // !CLIENT_DLL
 #include "rtech/pak/pakstate.h"
 /*****************************************************************************/
 #ifndef DEDICATED
@@ -61,6 +65,12 @@ void Show_Emblem()
     Msg(eDLL_T::SYSTEM_ERROR,
         "+------------------------------------------------[%s%010u%s]-+\n",
         g_svYellowF.c_str(), g_SDKDll.GetNTHeaders()->FileHeader.TimeDateStamp, g_svRedF.c_str());
+    Msg(eDLL_T::SYSTEM_ERROR,
+        "GameSDK internal build: %s%u%s (compiled %s %s)\n",
+        g_svYellowF.c_str(), SDK_INTERNAL_BUILD_NUMBER, g_svRedF.c_str(), __DATE__, __TIME__);
+    const string svBuildDetail = Format("internal_build=%u compiled='%s %s'",
+        SDK_INTERNAL_BUILD_NUMBER, __DATE__, __TIME__);
+    SDK_WriteRuntimeBreadcrumb("Show_Emblem", svBuildDetail.c_str());
     Msg(eDLL_T::SYSTEM_ERROR, "\n");
 }
 
@@ -206,7 +216,14 @@ void SDK_Shutdown()
         return;
     }
 
+    SDK_WriteProcessExitDiagnostic("SDK_Shutdown", 0, "graceful SDK shutdown");
+
     Msg(eDLL_T::NONE, "GameSDK shutdown initiated\n");
+
+#ifndef CLIENT_DLL
+    SV_BeginRemoteApiShutdown();
+    SV_WaitForRemoteApiWorkers();
+#endif // !CLIENT_DLL
 
 #ifndef DEDICATED
     Input_Shutdown();

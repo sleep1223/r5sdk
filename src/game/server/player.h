@@ -209,6 +209,8 @@ public:
 
 	char			GetLifeState(void) const { return m_lifeState; }
 	int            GetTeamNum(void) const { return m_iTeamNum; }
+	const MatchMetrics& GetMatchMetrics(void) const { return m_matchMetrics; }
+	bool           IsControllerModeActive(void) const { return m_controllerModeActive; }
 	const EHANDLE& GetThirdPersonEnt() const { return m_hThirdPersonEnt; }
 	const EHANDLE* GetViewModels() const { return m_hViewModels; }
 private:

@@ -16,6 +16,7 @@
 #pragma warning(push, 0)
 #include <new>
 #include <sapi.h>
+#include <sphelper.h>
 #pragma warning(pop)
 
 #include "DirtySDK/platform.h"
@@ -119,27 +120,6 @@ struct VoipNarrateRefT
     VoipNarrateGenderE          eGender;
 };
 /*** Private Functions ************************************************************/
-static HRESULT _VoipNarrateEnumTokens(const WCHAR *pCategoryId, const WCHAR *pReqAttribs, const WCHAR *pOptAttribs, IEnumSpObjectTokens **ppEnum)
-{
-    ISpObjectTokenCategory *pCategory = NULL;
-    HRESULT hResult = CoCreateInstance(CLSID_SpObjectTokenCategory, NULL, CLSCTX_INPROC_SERVER, IID_ISpObjectTokenCategory, (void **)&pCategory);
-
-    if (SUCCEEDED(hResult))
-    {
-        hResult = pCategory->SetId(pCategoryId, FALSE);
-    }
-    if (SUCCEEDED(hResult))
-    {
-        hResult = pCategory->EnumTokens(pReqAttribs, pOptAttribs, ppEnum);
-    }
-    if (pCategory != NULL)
-    {
-        pCategory->Release();
-    }
-
-    return(hResult);
-}
-
 /*F********************************************************************************/
 /*!
     \Function _VoipNarrateUninitialize
@@ -274,7 +254,7 @@ static int32_t _VoipNarrateGenderChange(VoipNarrateRefT *pVoipNarrate, VoipNarra
     _snwprintf(strLang, sizeof(strLang), L"Language=%d", pVoipNarrate->iLangCode);
     _snwprintf(strGender, sizeof(strGender), L"Gender=%s", eGender == VOIPNARRATE_GENDER_FEMALE ? L"Female" : L"Male");
 
-    if (_VoipNarrateEnumTokens(SPCAT_VOICES, strLang, strGender, &pVoiceTokenList) != S_OK)
+    if (SpEnumTokens(SPCAT_VOICES, strLang, strGender, &pVoiceTokenList) != S_OK)
     {
         NetPrintf(("voipheadsetpc: cannot retrieve voice token list\n"));
         return(-1);

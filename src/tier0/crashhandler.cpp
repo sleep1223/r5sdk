@@ -7,6 +7,119 @@
 #include "tier0/cpu.h"
 #include "tier0/crashhandler.h"
 
+static bool CrashHandler_EnsureSymbolsInitialized()
+{
+	static bool s_bAttempted = false;
+	static bool s_bInitialized = false;
+
+	if (s_bAttempted)
+		return s_bInitialized;
+
+	s_bAttempted = true;
+
+	const HANDLE hProcess = GetCurrentProcess();
+	SymSetOptions(SymGetOptions() | SYMOPT_DEFERRED_LOADS | SYMOPT_FAIL_CRITICAL_ERRORS | SYMOPT_LOAD_LINES | SYMOPT_UNDNAME);
+
+	if (SymInitialize(hProcess, nullptr, TRUE))
+	{
+		s_bInitialized = true;
+		return true;
+	}
+
+	// DbgHelp reports ERROR_INVALID_PARAMETER when the process is already
+	// initialized by another component. Symbol lookups are still valid then.
+	if (GetLastError() == ERROR_INVALID_PARAMETER)
+		s_bInitialized = true;
+
+	return s_bInitialized;
+}
+
+static const char* CrashHandler_BaseFileName(const char* const pszPath)
+{
+	if (!pszPath)
+		return "";
+
+	const char* const pszBackSlash = strrchr(pszPath, '\\');
+	const char* const pszForwardSlash = strrchr(pszPath, '/');
+	const char* pszSlash = pszBackSlash;
+	if (!pszSlash || (pszForwardSlash && pszForwardSlash > pszSlash))
+		pszSlash = pszForwardSlash;
+
+	return pszSlash ? pszSlash + 1 : pszPath;
+}
+
+static void CrashHandler_EnsureDirectoryExists(const char* const pszDirectory)
+{
+	if (!pszDirectory || !*pszDirectory)
+		return;
+
+	char szDirectory[MAX_PATH];
+	V_strncpy(szDirectory, pszDirectory, sizeof(szDirectory));
+	szDirectory[sizeof(szDirectory) - 1] = '\0';
+
+	for (char* p = szDirectory; *p; ++p)
+	{
+		if ((*p != '\\' && *p != '/') || p == szDirectory || *(p - 1) == ':')
+			continue;
+
+		const char ch = *p;
+		*p = '\0';
+		CreateDirectoryA(szDirectory, nullptr);
+		*p = ch;
+	}
+
+	CreateDirectoryA(szDirectory, nullptr);
+}
+
+static void CrashHandler_FormatTimestamp(char* const pszBuffer, const size_t nBufferSize)
+{
+	SYSTEMTIME st;
+	GetLocalTime(&st);
+
+	snprintf(pszBuffer, nBufferSize, "%04u%02u%02u_%02u%02u%02u_%03u_%lu_%lu",
+		st.wYear, st.wMonth, st.wDay,
+		st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+		GetCurrentProcessId(), GetCurrentThreadId());
+}
+
+static void CrashHandler_WriteTextFile(const char* const pszPath, const char* const pszText, const DWORD nTextLength)
+{
+	const HANDLE hTxtFile = CreateFileA(pszPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (hTxtFile == INVALID_HANDLE_VALUE)
+		return;
+
+	::WriteFile(hTxtFile, pszText, nTextLength, nullptr, nullptr);
+	CloseHandle(hTxtFile);
+}
+
+static void CrashHandler_WriteMiniDumpFile(const char* const pszPath, EXCEPTION_POINTERS* const pExceptionPointers)
+{
+	const HANDLE hDmpFile = CreateFileA(pszPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (hDmpFile == INVALID_HANDLE_VALUE)
+		return;
+
+	MINIDUMP_EXCEPTION_INFORMATION dumpExceptionInfo;
+	dumpExceptionInfo.ThreadId = GetCurrentThreadId();
+	dumpExceptionInfo.ExceptionPointers = pExceptionPointers;
+	dumpExceptionInfo.ClientPointers = false;
+
+	const MINIDUMP_TYPE dumpType = static_cast<MINIDUMP_TYPE>(
+		MiniDumpNormal |
+		MiniDumpWithDataSegs |
+		MiniDumpWithHandleData |
+		MiniDumpWithProcessThreadData |
+		MiniDumpWithThreadInfo |
+		MiniDumpWithUnloadedModules);
+
+	MiniDumpWriteDump(
+		GetCurrentProcess(),
+		GetCurrentProcessId(),
+		hDmpFile, dumpType,
+		&dumpExceptionInfo, nullptr, nullptr);
+
+	CloseHandle(hDmpFile);
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
@@ -65,8 +178,12 @@ void CCrashHandler::FormatCallstack()
 	}
 	for (WORD i = 0; i < m_nCapturedFrames; i++)
 	{
-		FormatExceptionAddress(reinterpret_cast<LPCSTR>(m_ppStackTrace[i]));
+		m_Buffer.AppendFormat("\t#%02u ", i);
+		FormatExceptionAddress(reinterpret_cast<LPCSTR>(m_ppStackTrace[i]), false);
 	}
+
+	if (!m_nCapturedFrames)
+		m_Buffer.Append("\t<no frames captured>\n");
 
 	m_Buffer.Append("}\n");
 }
@@ -127,26 +244,26 @@ void CCrashHandler::FormatModules()
 	const HANDLE hProcess = GetCurrentProcess();
 
 	DWORD cbNeeded;
-	const BOOL result = K32EnumProcessModulesEx(hProcess, m_ppModuleHandles, MAX_MODULE_HANDLES, &cbNeeded, LIST_MODULES_ALL);
+	const BOOL result = K32EnumProcessModulesEx(hProcess, m_ppModuleHandles, sizeof(m_ppModuleHandles), &cbNeeded, LIST_MODULES_ALL);
 
-	if (result && cbNeeded <= MAX_MODULE_HANDLES && cbNeeded >> 3)
+	if (result && cbNeeded <= sizeof(m_ppModuleHandles) && cbNeeded / sizeof(HMODULE))
 	{
 		CHAR szModuleName[MAX_FILEPATH];
 		LPSTR pszModuleName;
 		MODULEINFO modInfo;
 
-		for (DWORD i = 0, j = cbNeeded >> 3; j; i++, j--)
+		for (DWORD i = 0, j = cbNeeded / sizeof(HMODULE); j; i++, j--)
 		{
 			const DWORD m = GetModuleFileNameA(m_ppModuleHandles[i], szModuleName, sizeof(szModuleName));
 
-			if ((m - 1) > (sizeof(szModuleName) - 2)) // Too small for buffer.
+			if (m == 0 || (m - 1) > (sizeof(szModuleName) - 2)) // Too small for buffer.
 			{
 				snprintf(szModuleName, sizeof(szModuleName), "module@%p", m_ppModuleHandles[i]);
 				pszModuleName = szModuleName;
 			}
 			else
 			{
-				pszModuleName = strrchr(szModuleName, '\\') + 1;
+				pszModuleName = const_cast<LPSTR>(CrashHandler_BaseFileName(szModuleName));
 			}
 
 			K32GetModuleInformation(hProcess, m_ppModuleHandles[i], &modInfo, sizeof(modInfo));
@@ -219,6 +336,10 @@ void CCrashHandler::FormatSystemInfo()
 void CCrashHandler::FormatBuildInfo()
 {
 	m_Buffer.AppendFormat("build_id: %u\n", g_SDKDll.GetNTHeaders()->FileHeader.TimeDateStamp);
+	m_Buffer.AppendFormat("session_id: %s\n", g_LogSessionUUID.c_str());
+	m_Buffer.AppendFormat("log_dir: %s\n", g_LogSessionDirectory.c_str());
+	m_Buffer.AppendFormat("process_id: %lu\n", GetCurrentProcessId());
+	m_Buffer.AppendFormat("thread_id: %lu\n", GetCurrentThreadId());
 }
 
 //-----------------------------------------------------------------------------
@@ -233,13 +354,16 @@ void CCrashHandler::FormatExceptionAddress()
 // Purpose: formats the module, address and exception
 // Input  : pExceptionAddress - 
 //-----------------------------------------------------------------------------
-void CCrashHandler::FormatExceptionAddress(const LPCSTR pExceptionAddress)
+void CCrashHandler::FormatExceptionAddress(const LPCSTR pExceptionAddress, const bool bSetCrashModule)
 {
 	HMODULE hCrashedModule;
 	if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, pExceptionAddress, &hCrashedModule))
 	{
-		m_Buffer.AppendFormat("\t!!!unknown-module!!!: %p\n", pExceptionAddress);
-		m_nCrashMsgFlags = 0; // Display the "unknown DLL or EXE" message.
+		m_Buffer.AppendFormat("\t!!!unknown-module!!!: %p", pExceptionAddress);
+		FormatSymbolInfo(reinterpret_cast<DWORD64>(pExceptionAddress));
+		m_Buffer.Append("\n");
+		if (bSetCrashModule)
+			m_nCrashMsgFlags = 0; // Display the "unknown DLL or EXE" message.
 		return;
 	}
 
@@ -248,25 +372,71 @@ void CCrashHandler::FormatExceptionAddress(const LPCSTR pExceptionAddress)
 	CHAR szCrashedModuleFullName[MAX_PATH];
 	if (GetModuleFileNameExA(GetCurrentProcess(), hCrashedModule, szCrashedModuleFullName, sizeof(szCrashedModuleFullName)) - 1 > 0x1FE)
 	{
-		m_Buffer.AppendFormat("\tmodule@%p: %p\n", (void*)hCrashedModule, pModuleBase);
-		m_nCrashMsgFlags = 2; // Display the "Apex crashed" message without additional information regarding the module.
+		m_Buffer.AppendFormat("\tmodule@%p: %p", (void*)hCrashedModule, pModuleBase);
+		FormatSymbolInfo(reinterpret_cast<DWORD64>(pExceptionAddress));
+		m_Buffer.Append("\n");
+		if (bSetCrashModule)
+			m_nCrashMsgFlags = 2; // Display the "Apex crashed" message without additional information regarding the module.
 		return;
 	}
 
 	// NOTE: original implementation strips the extension as well, but we keep
 	// this in as its useful for when additional modules are loaded that aren't
 	// part of the OS or game
-	const char* const szCrashedModuleName = strrchr(szCrashedModuleFullName, '\\') + 1;
+	const char* const szCrashedModuleName = CrashHandler_BaseFileName(szCrashedModuleFullName);
 
-	m_Buffer.AppendFormat("\t%-15s: %p\n", szCrashedModuleName, pModuleBase);
-	m_nCrashMsgFlags = 1; // Display the "Apex crashed in <module>" message.
+	m_Buffer.AppendFormat("\t%-15s: %p", szCrashedModuleName, pModuleBase);
+	FormatSymbolInfo(reinterpret_cast<DWORD64>(pExceptionAddress));
+	m_Buffer.Append("\n");
+	if (bSetCrashModule)
+		m_nCrashMsgFlags = 1; // Display the "Apex crashed in <module>" message.
 
 	// Only set it once to the crashing module,
 	// empty strings get treated as "unknown
 	// DLL or EXE" in the crashmsg executable.
-	if (!m_CrashingModule.Length())
+	if (bSetCrashModule && !m_CrashingModule.Length())
 	{
 		m_CrashingModule.Append(szCrashedModuleName);
+	}
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: appends best-effort symbol and source information for an address
+//-----------------------------------------------------------------------------
+void CCrashHandler::FormatSymbolInfo(const DWORD64 nAddress)
+{
+	if (!nAddress || !CrashHandler_EnsureSymbolsInitialized())
+		return;
+
+	struct SymbolInfoBuffer_t
+	{
+		SYMBOL_INFO symbol;
+		char name[MAX_SYM_NAME];
+	};
+
+	SymbolInfoBuffer_t symbolInfo = {};
+	PSYMBOL_INFO pSymbol = &symbolInfo.symbol;
+	pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+	pSymbol->MaxNameLen = MAX_SYM_NAME;
+
+	DWORD64 nDisplacement = 0;
+	if (SymFromAddr(GetCurrentProcess(), nAddress, &nDisplacement, pSymbol))
+	{
+		m_Buffer.AppendFormat(" // %s", pSymbol->Name);
+		if (nDisplacement)
+			m_Buffer.AppendFormat("+0x%llX", nDisplacement);
+	}
+
+	IMAGEHLP_LINE64 lineInfo = {};
+	lineInfo.SizeOfStruct = sizeof(lineInfo);
+
+	DWORD nLineDisplacement = 0;
+	if (SymGetLineFromAddr64(GetCurrentProcess(), nAddress, &nLineDisplacement, &lineInfo) && lineInfo.FileName)
+	{
+		m_Buffer.AppendFormat(" [%s:%lu", lineInfo.FileName, lineInfo.LineNumber);
+		if (nLineDisplacement)
+			m_Buffer.AppendFormat("+0x%X", nLineDisplacement);
+		m_Buffer.Append("]");
 	}
 }
 
@@ -444,14 +614,16 @@ bool CCrashHandler::IsPageAccessible() const
 	MEMORY_BASIC_INFORMATION mbi = { 0 };
 
 	const SIZE_T t = VirtualQuery((LPCVOID)pContextRecord->Rsp, &mbi, sizeof(LPCVOID));
-	if (t < sizeof(mbi) || (mbi.Protect & PAGE_NOACCESS) || !((mbi.Protect & PAGE_NOACCESS) | PAGE_READWRITE))
+	if (t < sizeof(mbi))
 	{
 		return false;
 	}
-	else
-	{
-		return !(mbi.State & MEM_COMMIT);
-	}
+
+	if (!(mbi.State & MEM_COMMIT) || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+		return false;
+
+	return (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+		PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
 }
 
 //-----------------------------------------------------------------------------
@@ -459,7 +631,43 @@ bool CCrashHandler::IsPageAccessible() const
 //-----------------------------------------------------------------------------
 void CCrashHandler::CaptureCallStack()
 {
-	m_nCapturedFrames = RtlCaptureStackBackTrace(2, NUM_FRAMES_TO_CAPTURE, m_ppStackTrace, NULL);
+	m_nCapturedFrames = 0;
+
+	if (!m_pExceptionPointers || !m_pExceptionPointers->ContextRecord)
+		return;
+
+	CrashHandler_EnsureSymbolsInitialized();
+
+	CONTEXT context = *m_pExceptionPointers->ContextRecord;
+	STACKFRAME64 stackFrame = {};
+
+	stackFrame.AddrPC.Mode = AddrModeFlat;
+	stackFrame.AddrPC.Offset = context.Rip;
+	stackFrame.AddrFrame.Mode = AddrModeFlat;
+	stackFrame.AddrFrame.Offset = context.Rbp;
+	stackFrame.AddrStack.Mode = AddrModeFlat;
+	stackFrame.AddrStack.Offset = context.Rsp;
+
+	const HANDLE hProcess = GetCurrentProcess();
+	const HANDLE hThread = GetCurrentThread();
+
+	DWORD64 nLastAddress = 0;
+
+	while (m_nCapturedFrames < NUM_FRAMES_TO_CAPTURE)
+	{
+		const DWORD64 nAddress = stackFrame.AddrPC.Offset;
+		if (!nAddress || nAddress == nLastAddress)
+			break;
+
+		m_ppStackTrace[m_nCapturedFrames++] = reinterpret_cast<PVOID>(nAddress);
+		nLastAddress = nAddress;
+
+		if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, hProcess, hThread,
+			&stackFrame, &context, nullptr, SymFunctionTableAccess64, SymGetModuleBase64, nullptr))
+		{
+			break;
+		}
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -467,35 +675,29 @@ void CCrashHandler::CaptureCallStack()
 //-----------------------------------------------------------------------------
 void CCrashHandler::WriteFile()
 {
-	CFmtStrQuietTruncationN<256> outFile;
+	const char* const pszLogDirectory = g_LogSessionDirectory.empty()
+		? "platform/logs"
+		: g_LogSessionDirectory.c_str();
 
-	outFile.Format("%s/%s.txt", g_LogSessionDirectory.c_str(), "apex_crash");
-	HANDLE hTxtFile = CreateFile(outFile.String(), GENERIC_WRITE, 0, 0, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	CrashHandler_EnsureDirectoryExists(pszLogDirectory);
 
-	if (hTxtFile != INVALID_HANDLE_VALUE)
-	{
-		::WriteFile(hTxtFile, m_Buffer.String(), (DWORD)m_Buffer.Length(), NULL, NULL);
-		CloseHandle(hTxtFile);
-	}
+	char szTimestamp[64];
+	CrashHandler_FormatTimestamp(szTimestamp, sizeof(szTimestamp));
 
-	outFile.Format("%s/%s.dmp", g_LogSessionDirectory.c_str(), "minidump");
-	HANDLE hDmpFile = CreateFile(outFile.String(), GENERIC_WRITE, 0, 0, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, 0);
+	CFmtStrQuietTruncationN<MAX_PATH> latestCrashText;
+	CFmtStrQuietTruncationN<MAX_PATH> stampedCrashText;
+	CFmtStrQuietTruncationN<MAX_PATH> latestMiniDump;
+	CFmtStrQuietTruncationN<MAX_PATH> stampedMiniDump;
 
-	if (hDmpFile != INVALID_HANDLE_VALUE)
-	{
-		MINIDUMP_EXCEPTION_INFORMATION dumpExceptionInfo;
-		dumpExceptionInfo.ThreadId = GetCurrentThreadId();
-		dumpExceptionInfo.ExceptionPointers = m_pExceptionPointers;
-		dumpExceptionInfo.ClientPointers = false;
+	latestCrashText.Format("%s/%s.txt", pszLogDirectory, "apex_crash");
+	stampedCrashText.Format("%s/%s_%s.txt", pszLogDirectory, "apex_crash", szTimestamp);
+	latestMiniDump.Format("%s/%s.dmp", pszLogDirectory, "minidump");
+	stampedMiniDump.Format("%s/%s_%s.dmp", pszLogDirectory, "minidump", szTimestamp);
 
-		MiniDumpWriteDump(
-			GetCurrentProcess(),
-			GetCurrentProcessId(),
-			hDmpFile, MiniDumpNormal,
-			&dumpExceptionInfo, NULL, NULL);
-
-		CloseHandle(hDmpFile);
-	}
+	CrashHandler_WriteTextFile(stampedCrashText.String(), m_Buffer.String(), (DWORD)m_Buffer.Length());
+	CrashHandler_WriteTextFile(latestCrashText.String(), m_Buffer.String(), (DWORD)m_Buffer.Length());
+	CrashHandler_WriteMiniDumpFile(stampedMiniDump.String(), m_pExceptionPointers);
+	CrashHandler_WriteMiniDumpFile(latestMiniDump.String(), m_pExceptionPointers);
 }
 
 //-----------------------------------------------------------------------------
@@ -606,6 +808,15 @@ long __stdcall BottomLevelExceptionFilter(EXCEPTION_POINTERS* const pExceptionIn
 void CCrashHandler::Init()
 {
 	InitializeSRWLock(&m_Lock);
+
+	// Initialize the DbgHelp symbol handler now, on the main thread at startup,
+	// rather than lazily from inside the exception filter. DbgHelp is not
+	// thread-safe; doing this here guarantees symbol initialization never runs
+	// (or races) while a crash is being formatted. The in-crash calls to
+	// CrashHandler_EnsureSymbolsInitialized() then short-circuit, and all crash
+	// formatting remains serialized by the exclusive SRW lock above.
+	CrashHandler_EnsureSymbolsInitialized();
+
 	m_hExceptionHandler = AddVectoredExceptionHandler(TRUE, BottomLevelExceptionFilter);
 }
 

@@ -51,11 +51,47 @@
 #include "networksystem/hostmanager.h"
 #endif // !CLIENT_DLL
 #include "networksystem/listmanager.h"
+#ifdef DEDICATED
+#include "networksystem/remoteapi.h"
+#endif // DEDICATED
 #include "public/edict.h"
 #ifndef CLIENT_DLL
 #include "game/server/gameinterface.h"
 #endif // !CLIENT_DLL
 #include "game/shared/vscript_shared.h"
+
+#ifndef CLIENT_DLL
+static bool Host_ConfigFileExistsInProcessDirectory(const char* const pszRelativePath)
+{
+	if (!VALID_CHARSTAR(pszRelativePath))
+		return false;
+
+	char szModule[MAX_PATH];
+	const DWORD nLength = GetModuleFileNameA(nullptr, szModule, sizeof(szModule));
+	if (nLength == 0 || nLength >= sizeof(szModule))
+		return false;
+
+	char* pszLastSeparator = nullptr;
+	for (char* pszCurrent = szModule; *pszCurrent; pszCurrent++)
+	{
+		if (*pszCurrent == '\\' || *pszCurrent == '/')
+			pszLastSeparator = pszCurrent;
+	}
+
+	if (!pszLastSeparator)
+		return false;
+
+	*pszLastSeparator = '\0';
+
+	char szConfigPath[MAX_PATH];
+	V_snprintf(szConfigPath, sizeof(szConfigPath), "%s/%s", szModule, pszRelativePath);
+
+	const DWORD nAttributes = GetFileAttributesA(szConfigPath);
+	return nAttributes != INVALID_FILE_ATTRIBUTES
+		&& !(nAttributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+#endif // !CLIENT_DLL
+
 #ifndef CLIENT_DLL
 static ConVar host_statusRefreshRate("host_statusRefreshRate", "0.5", FCVAR_RELEASE, "Host status refresh rate (seconds).", true, 0.f, false, 0.f);
 
@@ -67,12 +103,20 @@ static ConVar host_sessionId("host_sessionId", "", FCVAR_REPLICATED|FCVAR_DEVELO
 ConVar hostdesc("hostdesc", "", FCVAR_RELEASE, "Host game server description.");
 
 #ifdef DEDICATED
+static bool HostState_IsUsablePylonHostIP(const CNetAdr& hostIp)
+{
+	return hostIp.GetType() == netadrtype_t::NA_IP && hostIp.GetPort() != 0;
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: Send keep alive request to Pylon Master Server.
 // Output : Returns true on success, false otherwise.
 //-----------------------------------------------------------------------------
 static void HostState_KeepAlive()
 {
+	if (SV_IsRemoteApiShutdownRequested())
+		return;
+
 	if (!g_pServer->IsActive() || !pylon_host_visibility.GetBool()) // Check for active game.
 	{
 		return;
@@ -92,23 +136,34 @@ static void HostState_KeepAlive()
 		*g_nServerRemoteChecksum,
 		SDK_VERSION,
 		g_pServer->GetNumClients(),
-		gpGlobals->maxClients,
+		SV_GetRemoteServerMaxPlayers(),
 		std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::system_clock::now().time_since_epoch()
 			).count()
 	};
 
-	std::thread request([&, gameServer]
+	PylonRequestConfig_t pylonRequestConfig;
+	g_MasterServer.CaptureRequestConfig(pylonRequestConfig);
+
+	SV_StartRemoteApiWorker("pylon-keepalive", [gameServer, pylonRequestConfig]
 		{
+			if (SV_IsRemoteApiShutdownRequested())
+				return;
+
 			string errorMsg;
 			string hostToken;
 			CNetAdr hostIp;
 
-			const bool result = g_MasterServer.PostServerHost(errorMsg, hostToken, hostIp, gameServer);
+			const bool result = g_MasterServer.PostServerHost(pylonRequestConfig, errorMsg, hostToken, hostIp, gameServer);
+			if (SV_IsRemoteApiShutdownRequested())
+				return;
 
 			// Apply the data the next frame
 			g_TaskQueue.Dispatch([result, errorMsg, hostToken, hostIp]
 				{
+					if (SV_IsRemoteApiShutdownRequested())
+						return;
+
 					if (!result)
 					{
 						if (!errorMsg.empty() && g_ServerHostManager.GetCurrentError().compare(errorMsg) != NULL)
@@ -126,15 +181,16 @@ static void HostState_KeepAlive()
 								g_svReset.c_str(), g_svGreyB.c_str(),
 								hostToken.c_str(), g_svReset.c_str());
 						}
-					}
 
-					g_ServerHostManager.SetHostIP(hostIp);
+						if (HostState_IsUsablePylonHostIP(hostIp))
+						{
+							g_ServerHostManager.SetHostIP(hostIp);
+						}
+					}
 
 				}, 0);
 		}
 	);
-
-	request.detach();
 }
 #endif // DEDICATED
 
@@ -496,6 +552,8 @@ void CHostState::LoadConfig(void) const
 		}
 #ifndef CLIENT_DLL
 		Cbuf_AddText(Cbuf_GetCurrentPlayer(), "exec liveapi.cfg\n", cmd_source_t::kCommandSrcCode);
+		if (Host_ConfigFileExistsInProcessDirectory("platform/cfg/r5_api.cfg"))
+			Cbuf_AddText(Cbuf_GetCurrentPlayer(), "exec r5_api.cfg\n", cmd_source_t::kCommandSrcCode);
 #endif //!CLIENT_DLL
 #ifndef DEDICATED
 		Cbuf_AddText(Cbuf_GetCurrentPlayer(), "exec bind.cfg\n", cmd_source_t::kCommandSrcCode);

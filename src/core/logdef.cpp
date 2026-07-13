@@ -5,6 +5,27 @@ std::shared_ptr<spdlog::logger> g_TermLogger;
 std::shared_ptr<spdlog::logger> g_SuppementalToolsLogger;
 
 #ifndef _TOOLS
+static string SpdLog_GetProcessDirectory()
+{
+	char szModule[MAX_PATH];
+	const DWORD nLength = GetModuleFileNameA(nullptr, szModule, sizeof(szModule));
+	if (nLength == 0 || nLength >= sizeof(szModule))
+		return ".";
+
+	char* pszLastSeparator = nullptr;
+	for (char* pszCurrent = szModule; *pszCurrent; pszCurrent++)
+	{
+		if (*pszCurrent == '\\' || *pszCurrent == '/')
+			pszLastSeparator = pszCurrent;
+	}
+
+	if (!pszLastSeparator)
+		return ".";
+
+	*pszLastSeparator = '\0';
+	return szModule;
+}
+
 static void SpdLog_CreateRotatingLoggers()
 {
 	/************************
@@ -62,7 +83,8 @@ void SpdLog_Init(const bool bAnsiColor)
 		g_LogSessionUUID = "00000000-0000-0000-0000-000000000000";
 	}
 
-	g_LogSessionDirectory = fmt::format("platform/logs/{:s}", g_LogSessionUUID);
+	g_LogSessionDirectory = fmt::format("{:s}/platform/logs/{:s}",
+		SpdLog_GetProcessDirectory(), g_LogSessionUUID);
 #endif // !_TOOLS
 	/************************
 	 * WINDOWS LOGGER SETUP *

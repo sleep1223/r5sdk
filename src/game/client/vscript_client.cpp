@@ -182,12 +182,12 @@ static SQBool Script_CheckServerIndexAndFailure(HSQUIRRELVM v, SQInteger iServer
     return true;
 }
 
-static void Internal_UIScript_RequestForServerBrowserListThreaded()
+static void Internal_UIScript_RequestForServerBrowserListThreaded(const PylonRequestConfig_t& requestConfig)
 {
     string responseMsg;
     size_t serverCount;
 
-    const bool success = g_ServerListManager.RefreshServerList(responseMsg, serverCount);
+    const bool success = g_ServerListManager.RefreshServerList(requestConfig, responseMsg, serverCount);
 
     g_TaskQueue.Dispatch([success, errorMsg = std::move(responseMsg), serverCount]
         {
@@ -212,7 +212,13 @@ static void Internal_UIScript_RequestForServerBrowserListThreaded()
 //-----------------------------------------------------------------------------
 static SQRESULT UIScript_RequestServerList(HSQUIRRELVM v)
 {
-    std::thread(Internal_UIScript_RequestForServerBrowserListThreaded).detach();
+    PylonRequestConfig_t requestConfig;
+    g_MasterServer.CaptureRequestConfig(requestConfig);
+
+    std::thread([requestConfig]
+        {
+            Internal_UIScript_RequestForServerBrowserListThreaded(requestConfig);
+        }).detach();
     SCRIPT_CHECK_AND_RETURN(v, SQ_OK);
 }
 
@@ -462,12 +468,12 @@ static SQRESULT UIScript_GetPromoData(HSQUIRRELVM v)
     SCRIPT_CHECK_AND_RETURN(v, SQ_OK);
 }
 
-static void Internal_UIScript_RequestEULAThreaded()
+static void Internal_UIScript_RequestEULAThreaded(const PylonRequestConfig_t& requestConfig)
 {
     MSEulaData_t eulaDataMs;
     string responseMsg;
 
-    const bool success = g_MasterServer.GetEULA(eulaDataMs, responseMsg);
+    const bool success = g_MasterServer.GetEULA(requestConfig, eulaDataMs, responseMsg);
 
     g_TaskQueue.Dispatch([success, errorMsg = std::move(responseMsg), eulaData = std::move(eulaDataMs)]
         {
@@ -495,7 +501,13 @@ static void Internal_UIScript_RequestEULAThreaded()
 
 static SQRESULT UIScript_RequestEULAContents(HSQUIRRELVM v)
 {
-    std::thread(Internal_UIScript_RequestEULAThreaded).detach();
+    PylonRequestConfig_t requestConfig;
+    g_MasterServer.CaptureRequestConfig(requestConfig);
+
+    std::thread([requestConfig]
+        {
+            Internal_UIScript_RequestEULAThreaded(requestConfig);
+        }).detach();
     SCRIPT_CHECK_AND_RETURN(v, SQ_OK);
 }
 

@@ -20,8 +20,12 @@
 #include "engine/server/server.h"
 #include "game/shared/usercmd.h"
 #include "game/server/util_server.h"
+#include "networksystem/matchreport.h"
 #include "pluginsystem/pluginsystem.h"
 #include "game/server/recipientfilter.h"
+
+static ConVar sv_disable_enemy_spotted_ping("sv_disable_enemy_spotted_ping", "1", FCVAR_RELEASE,
+	"Drops enemy-spotted ping usercmds before script validation.");
 
 //-----------------------------------------------------------------------------
 // Purpose: retrieves the index of the client that issued the last command
@@ -87,6 +91,8 @@ void CServerGameDLL::PrecompileScriptsJob(void)
 //-----------------------------------------------------------------------------
 void CServerGameDLL::LevelShutdown(void)
 {
+	SV_ReportMatchEndData(g_pServer);
+
 	const static int index = 8;
 	CallVFunc<void>(index, this);
 }
@@ -97,6 +103,8 @@ void CServerGameDLL::LevelShutdown(void)
 //-----------------------------------------------------------------------------
 void CServerGameDLL::GameShutdown(void)
 {
+	SV_ReportMatchEndData(g_pServer);
+
 	// Game just calls a nullsub for GameShutdown lol.
 	const static int index = 9;
 	CallVFunc<void>(index, this);
@@ -141,8 +149,12 @@ void CServerGameDLL::OnReceivedSayTextMessage(CServerGameDLL* thisptr, int sende
 	const bool bShouldApplyGlobalCommsMutes = SV_ShouldApplyTextChatGlobalMutes();
 
 	pSenderPlayer->UpdateLastActiveTime(gpGlobals->curTime);
+
+	CClientExtended* const pSenderExtended = pSenderClient->GetClientExtended();
+	if (!pSenderExtended)
+		return;
 	
-	const bool bSenderIsCommsBanned = pSenderClient->GetClientExtended()->IsClientCommsBanned();
+	const bool bSenderIsCommsBanned = pSenderExtended->IsClientCommsBanned();
 
 	if (bShouldApplyGlobalCommsMutes && bSenderIsCommsBanned)
 	{
@@ -156,7 +168,7 @@ void CServerGameDLL::OnReceivedSayTextMessage(CServerGameDLL* thisptr, int sende
 		v_UserMessageBegin(&filter, "SayText", 2);
 
 		MessageWriteByte(pSenderPlayer->GetEdict());
-		MessageWriteString(pSenderClient->GetClientExtended()->GetCommsMuteDisplayMessage());
+		MessageWriteString(pSenderExtended->GetCommsMuteDisplayMessage());
 		MessageWriteBool(bIsTeamChat);
 
 		MessageEnd();
@@ -191,8 +203,12 @@ void CServerGameDLL::OnReceivedSayTextMessage(CServerGameDLL* thisptr, int sende
 		if (!pRecipientPlayer || !pRecipientClient || !pRecipientPlayer->IsConnected())
 			continue;
 
+		CClientExtended* const pRecipientExtended = pRecipientClient->GetClientExtended();
+		if (!pRecipientExtended)
+			continue;
+
 		//If our recipient is banned and the host doesnt want banned people to see others chat skip them
-		if (bShouldApplyGlobalCommsMutes && pRecipientClient->GetClientExtended()->IsClientCommsBanned() && !sv_commsBannedClientsCanReceiveComms.GetBool())
+		if (bShouldApplyGlobalCommsMutes && pRecipientExtended->IsClientCommsBanned() && !sv_commsBannedClientsCanReceiveComms.GetBool())
 			continue;
 
 		//If we are only allowed to talk to the dead make sure the recipient is dead
@@ -275,6 +291,50 @@ static void DrawAllDebugOverlays()
 	DrawGeometryOverlays();
 }
 
+static bool IsValidPingEntityHandle(const CBaseHandle& handle)
+{
+	if (!handle.IsValid() || !g_serverEntityList)
+		return false;
+
+	const int entIndex = handle.ToInt() & ENT_ENTRY_MASK;
+	if (entIndex < 0 || entIndex >= NUM_ENT_ENTRIES)
+		return false;
+
+	const CEntInfo* const pInfo = g_serverEntityList->GetEntInfoPtrByIndex(entIndex);
+	return pInfo && pInfo->m_pEntity && pInfo->m_SerialNumber == handle.GetSerialNumber();
+}
+
+static void SanitizePingCommands(CUserCmd* ucmd)
+{
+	for (int i = 0; i < NUM_PING_COMMANDS; i++)
+	{
+		PingCommand_s& ping = ucmd->m_pingCommands[i];
+
+		if (ping.commandType < PING_INVALID || ping.commandType > LAST_PING_COMMAND)
+		{
+			ping.Reset();
+			continue;
+		}
+
+		if (ping.commandType == PING_INVALID)
+			continue;
+
+		if (!ping.pingOrigin.IsValid())
+			ping.pingOrigin.Init();
+
+		if (ping.commandType == PING_ENEMY_SPOTTED)
+		{
+			if (sv_disable_enemy_spotted_ping.GetBool() || !IsValidPingEntityHandle(ping.entityHandle))
+				ping.Reset();
+
+			continue;
+		}
+
+		if (ping.entityHandle.IsValid() && !IsValidPingEntityHandle(ping.entityHandle))
+			ping.entityHandle.Term();
+	}
+}
+
 void CServerGameClients::_ProcessUserCmds(CServerGameClients* thisp, edict_t edict,
 	bf_read* buf, int numCmds, int totalCmds, int droppedPackets, bool ignore, bool paused)
 {
@@ -306,6 +366,7 @@ void CServerGameClients::_ProcessUserCmds(CServerGameClients* thisp, edict_t edi
 	{
 		to = &cmds[i];
 		ReadUserCmd(buf, to, from);
+		SanitizePingCommands(to);
 		from = to;
 	}
 

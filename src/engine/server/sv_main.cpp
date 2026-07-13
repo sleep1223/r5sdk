@@ -4,13 +4,18 @@
 //
 //===========================================================================//
 #include "core/stdafx.h"
+#include <cstdint>
+#include <memory>
 #include "tier0/threadtools.h"
 #include "tier0/frametask.h"
 #include "tier1/cvar.h"
 #include "engine/server/sv_main.h"
 #include "engine/client/client.h"
+#include "engine/net.h"
 #include "networksystem/pylon.h"
 #include "networksystem/bansystem.h"
+#include "networksystem/clientdisconnect.h"
+#include "networksystem/remoteapi.h"
 #include "engine/client/client.h"
 #include "server.h"
 #include "game/server/gameinterface.h"
@@ -18,6 +23,13 @@
 
 static ConVar sv_applyGlobalCommsBans("sv_applyGlobalCommsBans", "3", FCVAR_RELEASE, "Determines whether or not to use the global chat ban list, 0 = None, 1 = Text, 2 = Voice, 3 = Both.", false, 0.f, true, 3.f);
 static ConVar sv_commsBansAreGameBans("sv_commsBansAreGameBans", "0", FCVAR_RELEASE, "If set chat bans will be applied as game bans", false, 0.f, true, 1.f);
+
+static constexpr unsigned int GLOBAL_BAN_DISCONNECT_RETRY_FRAMES = 1;
+static constexpr unsigned int GLOBAL_BAN_CONNECT_DENY_CLEANUP_FRAMES = 4;
+static constexpr unsigned int GLOBAL_BAN_DISCONNECT_MAX_RETRIES = 600;
+static constexpr unsigned int GLOBAL_BAN_DISCONNECT_KEY_HOLD_FRAMES = 32;
+
+static CClientDisconnectTracker s_GlobalBanDisconnects;
 
 bool SV_ShouldApplyTextChatGlobalMutes()
 {
@@ -35,6 +47,130 @@ bool SV_ShouldApplyVoiceChatGlobalMutes()
 	return false;
 }
 
+static bool SV_BeginGlobalBanDisconnect(const ClientDisconnectKey_t& key)
+{
+	return s_GlobalBanDisconnects.Begin(key);
+}
+
+static void SV_EndGlobalBanDisconnect(const ClientDisconnectKey_t& key)
+{
+	s_GlobalBanDisconnects.End(key);
+}
+
+static void SV_EndGlobalBanDisconnectDelayed(const ClientDisconnectKey_t& key)
+{
+	g_TaskQueue.Dispatch([key]
+		{
+			SV_EndGlobalBanDisconnect(key);
+		}, GLOBAL_BAN_DISCONNECT_KEY_HOLD_FRAMES);
+}
+
+static void SV_DisconnectForGlobalBan(const ClientDisconnectKey_t& key, const string& svReason,
+	const string& svIPAddr, const int nPort, const NucleusID_t nNucleusID,
+	const string& svDescription, const unsigned int nAttempt = 0)
+{
+	if (SV_IsRemoteApiShutdownRequested())
+	{
+		SV_EndGlobalBanDisconnect(key);
+		return;
+	}
+
+	CClient* const pClient = SV_ResolveClientDisconnectClient(key);
+	if (!pClient)
+	{
+		Warning(eDLL_T::SERVER, "Skipped global ban disconnect for slot #%i handle=%i uid='%llu' because the client slot changed or client is gone\n",
+			key.m_nUserID, key.m_nHandle, key.m_nNucleusID);
+		SV_EndGlobalBanDisconnect(key);
+		return;
+	}
+
+	const CNetChan* const pChan = pClient->GetNetChan();
+	if (!pChan)
+	{
+		Warning(eDLL_T::SERVER, "Skipped global ban disconnect for '%llu' because the netchannel is gone\n",
+			nNucleusID);
+		SV_EndGlobalBanDisconnect(key);
+		return;
+	}
+
+	const int nUserID = pClient->GetUserID();
+	const int nHandle = pClient->GetHandle();
+	const int nSignonState = static_cast<int>(pClient->GetSignonState());
+
+	if (!pClient->IsActive())
+	{
+		if (nAttempt >= GLOBAL_BAN_CONNECT_DENY_CLEANUP_FRAMES)
+		{
+			Warning(eDLL_T::SERVER, "Forcing global ban pre-active cleanup for '[%s]:%i' from slot #%i handle=%i signon=%i uid='%llu' reason='%s'\n",
+				svIPAddr.c_str(), nPort, nUserID, nHandle, nSignonState, nNucleusID, svReason.c_str());
+			SV_DisconnectClientNow(pClient, svReason.c_str());
+			SV_EndGlobalBanDisconnectDelayed(key);
+			return;
+		}
+
+		if (nAttempt >= GLOBAL_BAN_DISCONNECT_MAX_RETRIES)
+		{
+			Warning(eDLL_T::SERVER, "Skipped global ban disconnect for '[%s]:%i' from slot #%i handle=%i signon=%i uid='%llu' because signon did not complete\n",
+				svIPAddr.c_str(), nPort, nUserID, nHandle, nSignonState, nNucleusID);
+			SV_EndGlobalBanDisconnect(key);
+			return;
+		}
+
+		if (nAttempt == 0)
+		{
+			Warning(eDLL_T::SERVER, "Delaying global ban disconnect for '[%s]:%i' from slot #%i handle=%i signon=%i uid='%llu' until signon is complete\n",
+				svIPAddr.c_str(), nPort, nUserID, nHandle, nSignonState, nNucleusID);
+		}
+
+		g_TaskQueue.Dispatch([key, svReason, svIPAddr, nPort, nNucleusID, svDescription, nAttempt]
+			{
+				SV_DisconnectForGlobalBan(key, svReason, svIPAddr, nPort,
+					nNucleusID, svDescription, nAttempt + 1);
+			}, GLOBAL_BAN_DISCONNECT_RETRY_FRAMES);
+		return;
+	}
+
+	Warning(eDLL_T::SERVER, "Global ban disconnecting '[%s]:%i' from slot #%i handle=%i signon=%i uid='%llu' reason='%s'\n",
+		svIPAddr.c_str(), nPort, nUserID, nHandle, nSignonState, nNucleusID, svReason.c_str());
+
+	SV_DisconnectClientNow(pClient, svReason.c_str());
+
+	Warning(eDLL_T::SERVER, "Removed client '[%s]:%i' from slot #%i ('%llu' %s)\n",
+		svIPAddr.c_str(), nPort, nUserID, nNucleusID, svDescription.c_str());
+
+	SV_EndGlobalBanDisconnectDelayed(key);
+}
+
+static void SV_QueueGlobalBanDisconnect(CClient* const pClient, const char* const pszReason,
+	const char* const pszIpStr, const int nPort, const NucleusID_t nNucleusID,
+	const char* const pszDescription)
+{
+	const ClientDisconnectKey_t key = SV_MakeClientDisconnectKey(pClient, nNucleusID);
+	if (!SV_IsValidClientDisconnectKey(key))
+	{
+		Warning(eDLL_T::SERVER, "Skipped global ban disconnect for '%llu' because the captured client identity is invalid\n",
+			nNucleusID);
+		return;
+	}
+
+	if (!SV_BeginGlobalBanDisconnect(key))
+	{
+		Warning(eDLL_T::SERVER, "Skipped duplicate global ban disconnect for '%llu'\n",
+			nNucleusID);
+		return;
+	}
+
+	const string svReason(VALID_CHARSTAR(pszReason) ? pszReason : "Banned from server");
+	const string svIPAddr(VALID_CHARSTAR(pszIpStr) ? pszIpStr : "unknown");
+	const string svDescription(VALID_CHARSTAR(pszDescription) ? pszDescription : "is banned");
+
+	g_TaskQueue.Dispatch([key, svReason, svIPAddr, nPort, nNucleusID, svDescription]
+		{
+			SV_DisconnectForGlobalBan(key, svReason, svIPAddr, nPort,
+				nNucleusID, svDescription);
+		}, 0);
+}
+
 static bool SV_GlobalCommsBansEnabled()
 {
 	if (sv_applyGlobalCommsBans.GetInt() != 0)
@@ -44,21 +180,19 @@ static bool SV_GlobalCommsBansEnabled()
 
 static void SV_HandleConnectBan(CClient* const pClient, const char* const pszReason, const char* const pszIpStr, const int nPort, const NucleusID_t nNucleusID)
 {
-	pClient->Disconnect(Reputation_t::REP_MARK_BAD, "%s", pszReason);
-	Warning(eDLL_T::SERVER, "Removed client '[%s]:%i' from slot #%i ('%llu' is banned globally!)\n",
-		pszIpStr, nPort, pClient->GetUserID(), nNucleusID);
+	SV_QueueGlobalBanDisconnect(pClient, pszReason, pszIpStr, nPort, nNucleusID, "is banned globally!");
 }
 
 static void SV_HandleCommunicationBan(CClient* const pClient, const char* const pszReason, const char* const pszExpiry, const char* const pszIpStr, const int nPort, const NucleusID_t nNucleusID)
 {
 	const int nUserId = pClient->GetUserID();
 	CClientExtended* const pClientExtended = pClient->GetClientExtended();
+	if (!pClientExtended)
+		return;
 
 	if (sv_commsBansAreGameBans.GetBool())
 	{
-		pClient->Disconnect(Reputation_t::REP_MARK_BAD, "%s", pszReason);
-		Warning(eDLL_T::SERVER, "Removed client '[%s]:%i' from slot #%i ('%llu' is communication banned and communication bans are treated as game bans!)\n",
-			pszIpStr, nPort, nUserId, nNucleusID);
+		SV_QueueGlobalBanDisconnect(pClient, pszReason, pszIpStr, nPort, nNucleusID, "is communication banned and communication bans are treated as game bans!");
 	}
 	else
 	{
@@ -73,63 +207,92 @@ static void SV_HandleCommunicationBan(CClient* const pClient, const char* const 
 //-----------------------------------------------------------------------------
 // Purpose: checks if particular client is banned on the comp server
 //-----------------------------------------------------------------------------
-void SV_CheckForBanAndDisconnect(CClient* const pClient, const string& svIPAddr,
-	const NucleusID_t nNucleusID, const string& svPersonaName, const int nPort)
+void SV_CheckForBanAndDisconnect(const int nClientUserID, const int nClientHandle,
+	const string& svIPAddr,
+	const NucleusID_t nNucleusID, const string& svPersonaName, const int nPort,
+	const PylonRequestConfig_t& requestConfig)
 {
-	Assert(pClient != nullptr);
+	if (SV_IsRemoteApiShutdownRequested())
+		return;
 
 	string svError;
 	string expiry;
 	CBanSystem::Banned_t::BanType_e banType = CBanSystem::Banned_t::CONNECT;
 	
-	const bool bCompBanned = g_MasterServer.CheckForBan(svIPAddr, nNucleusID, svPersonaName, svError, banType, expiry);
+	const bool bCompBanned = g_MasterServer.CheckForBan(requestConfig, svIPAddr, nNucleusID, svPersonaName, svError, banType, expiry);
 
-	if (bCompBanned)
-	{
-		g_TaskQueue.Dispatch([pClient, svError, svIPAddr, nNucleusID, nPort, banType, expiry]
+	if (!bCompBanned || SV_IsRemoteApiShutdownRequested())
+		return;
+
+	ClientDisconnectKey_t key;
+	key.m_nUserID = nClientUserID;
+	key.m_nHandle = nClientHandle;
+	key.m_nNucleusID = nNucleusID;
+
+	g_TaskQueue.Dispatch([key, svError, svIPAddr, nNucleusID, nPort, banType, expiry]
+		{
+			if (SV_IsRemoteApiShutdownRequested())
+				return;
+
+			// Make sure client isn't already disconnected,
+			// and that if there is a valid netchannel, that
+			// it hasn't been taken by a different client by
+			// the time this task is getting executed.
+			CClient* const pClient = SV_ResolveClientDisconnectClient(key);
+			if (!pClient)
+				return;
+
+			const CNetChan* const pChan = pClient->GetNetChan();
+			if (pChan && pClient->GetNucleusID() == nNucleusID)
 			{
-				// Make sure client isn't already disconnected,
-				// and that if there is a valid netchannel, that
-				// it hasn't been taken by a different client by
-				// the time this task is getting executed.
-				const CNetChan* const pChan = pClient->GetNetChan();
-				if (pChan && pClient->GetNucleusID() == nNucleusID)
+				switch (banType)
 				{
-					switch (banType)
-					{
-					case CBanSystem::Banned_t::CONNECT:
-					{
-						SV_HandleConnectBan(pClient, svError.c_str(), svIPAddr.c_str(), nPort, nNucleusID);
-						break;
-					}
-					case CBanSystem::Banned_t::COMMUNICATION:
-					{
-						if(SV_GlobalCommsBansEnabled())
-							SV_HandleCommunicationBan(pClient, svError.c_str(), expiry.c_str(), svIPAddr.c_str(), nPort, nNucleusID);
-						break;
-					default:
-						break;
-					}
-					}
+				case CBanSystem::Banned_t::CONNECT:
+				{
+					SV_HandleConnectBan(pClient, svError.c_str(), svIPAddr.c_str(), nPort, nNucleusID);
+					break;
 				}
-			}, 0);
-	}
+				case CBanSystem::Banned_t::COMMUNICATION:
+				{
+					if(SV_GlobalCommsBansEnabled())
+						SV_HandleCommunicationBan(pClient, svError.c_str(), expiry.c_str(), svIPAddr.c_str(), nPort, nNucleusID);
+					break;
+				}
+				default:
+					break;
+				}
+			}
+		}, 0);
 }
 
 //-----------------------------------------------------------------------------
 // Purpose: checks if particular client is banned on the master server
 //-----------------------------------------------------------------------------
-void SV_ProcessBulkCheck(const CBanSystem::BannedList_t* const pBannedVec)
+void SV_ProcessBulkCheck(const CBanSystem::BannedList_t* const pBannedVec, const PylonRequestConfig_t& requestConfig)
 {
-	CBanSystem::BannedList_t* outBannedVec = nullptr;
-
-	if (!g_MasterServer.GetBannedList(*pBannedVec, &outBannedVec))
+	if (SV_IsRemoteApiShutdownRequested())
 		return;
 
-	g_TaskQueue.Dispatch([outBannedVec]
+	CBanSystem::BannedList_t* outBannedVec = nullptr;
+
+	if (!g_MasterServer.GetBannedList(requestConfig, *pBannedVec, &outBannedVec))
+		return;
+
+	// Own the result in a shared_ptr so it is freed even if the dispatched task
+	// is never executed (e.g. the task queue is torn down at shutdown before the
+	// task runs). std::function requires copyable captures, so shared_ptr (not
+	// unique_ptr) is used here.
+	std::shared_ptr<CBanSystem::BannedList_t> spBannedVec(outBannedVec);
+
+	if (SV_IsRemoteApiShutdownRequested())
+		return;
+
+	g_TaskQueue.Dispatch([spBannedVec]
 		{
-			SV_CheckClientsForBan(outBannedVec);
-			delete outBannedVec;
+			if (SV_IsRemoteApiShutdownRequested())
+				return;
+
+			SV_CheckClientsForBan(spBannedVec.get());
 		}, 0);
 }
 
@@ -141,6 +304,9 @@ void SV_CheckClientsForBan(const CBanSystem::BannedList_t* const pBannedVec /*= 
 {
 	Assert(ThreadInMainThread());
 
+	if (SV_IsRemoteApiShutdownRequested())
+		return;
+
 	CBanSystem::BannedList_t* bannedVec = !pBannedVec 
 		? new CBanSystem::BannedList_t 
 		: nullptr;
@@ -148,12 +314,12 @@ void SV_CheckClientsForBan(const CBanSystem::BannedList_t* const pBannedVec /*= 
 	for (int c = 0; c < gpGlobals->maxClients; c++) // Loop through all possible client instances.
 	{
 		CClient* const pClient = g_pServer->GetClient(c);
-		const CNetChan* const pNetChan = pClient->GetNetChan();
 
-		if (!pNetChan)
+		if (!pClient || !pClient->IsConnected())
 			continue;
 
-		if (!pClient->IsConnected())
+		const CNetChan* const pNetChan = pClient->GetNetChan();
+		if (!pNetChan)
 			continue;
 
 		if (pNetChan->GetRemoteAddress().IsLoopback())
@@ -199,7 +365,8 @@ void SV_CheckClientsForBan(const CBanSystem::BannedList_t* const pBannedVec /*= 
 				case CBanSystem::Banned_t::COMMUNICATION:
 				{
 					//Does the host have the comms ban system on and is our client already banned, no point rebanning them if they are
-					if (SV_GlobalCommsBansEnabled() && (!pClient->GetClientExtended()->IsClientCommsBanned() || sv_commsBansAreGameBans.GetBool()))
+					CClientExtended* const pClientExtended = pClient->GetClientExtended();
+					if (pClientExtended && SV_GlobalCommsBansEnabled() && (!pClientExtended->IsClientCommsBanned() || sv_commsBansAreGameBans.GetBool()))
 						SV_HandleCommunicationBan(pClient, banned.m_Address.String(), banned.m_BanExpiry.Get(), szIPAddr, nPort, nNucleusID);
 					break;
 				}
@@ -216,13 +383,19 @@ void SV_CheckClientsForBan(const CBanSystem::BannedList_t* const pBannedVec /*= 
 
 	if (bannedVec && !bannedVec->IsEmpty())
 	{
-		std::thread bulkCheck([bannedVec]()
-			{
-				SV_ProcessBulkCheck(bannedVec);
-				delete bannedVec;
-			});
+		PylonRequestConfig_t pylonRequestConfig;
+		g_MasterServer.CaptureRequestConfig(pylonRequestConfig);
 
-		bulkCheck.detach();
+		if (!SV_StartRemoteApiWorker("pylon-bulk-ban-check", [bannedVec, pylonRequestConfig]
+			{
+				if (!SV_IsRemoteApiShutdownRequested())
+					SV_ProcessBulkCheck(bannedVec, pylonRequestConfig);
+
+				delete bannedVec;
+			}))
+		{
+			delete bannedVec;
+		}
 	}
 	else if (bannedVec)
 	{
@@ -297,8 +470,12 @@ void SV_BroadcastVoiceData(CClient* const cl, const int nBytes, char* const data
 		if (pClient->GetSignonState() != SIGNONSTATE::SIGNONSTATE_FULL)
 			continue;
 
+		CClientExtended* const pClientExtended = pClient->GetClientExtended();
+		if (!pClientExtended)
+			continue;
+
 		//If the client is communication banned and the server has decidecd that players who are comms banned cant hear other players, skip broadcasting to them
-		if (!bBannedClientsCanHearOtherClients && bShouldApplyGlobalMutes &&  pClient->GetClientExtended()->IsClientCommsBanned())
+		if (!bBannedClientsCanHearOtherClients && bShouldApplyGlobalMutes && pClientExtended->IsClientCommsBanned())
 			continue;
 
 		// is this client the sender
@@ -348,8 +525,12 @@ void SV_BroadcastDurangoVoiceData(CClient* const cl, const int nBytes, char* con
 		if (pClient->GetSignonState() != SIGNONSTATE::SIGNONSTATE_FULL)
 			continue;
 
+		CClientExtended* const pClientExtended = pClient->GetClientExtended();
+		if (!pClientExtended)
+			continue;
+
 		//If the client is communication banned and the server has decidecd that players who are comms banned cant other players, skip broadcasting to them
-		if (!bBannedClientsCanHearOtherClients && bShouldApplyGlobalMutes && pClient->GetClientExtended()->IsClientCommsBanned())
+		if (!bBannedClientsCanHearOtherClients && bShouldApplyGlobalMutes && pClientExtended->IsClientCommsBanned())
 			continue;
 
 		// is this client the sender

@@ -14,10 +14,12 @@
 //=============================================================================//
 
 #include "core/stdafx.h"
+#include "core/logger.h"
 #include "common/callback.h"
 #include "engine/server/server.h"
 #include "engine/host_state.h"
 #include "engine/debugoverlay.h"
+#include "networksystem/matchreport.h"
 #include "pluginsystem/pluginsystem.h"
 #include "vscript/vscript.h"
 #include "vscript/languages/squirrel_re/include/sqvm.h"
@@ -26,6 +28,7 @@
 
 #include "game/shared/vscript_shared.h"
 #include "game/shared/vscript_debug_overlay_shared.h"
+#include "game/server/util_server.h"
 
 #include "liveapi/liveapi.h"
 #include "vscript_server.h"
@@ -369,6 +372,308 @@ static SQRESULT ServerScript_GetNumFakeClients(HSQUIRRELVM v)
 static SQRESULT ServerScript_GetSessionID(HSQUIRRELVM v)
 {
     sq_pushstring(v, g_LogSessionUUID.c_str(), (SQInteger)g_LogSessionUUID.length());
+    SCRIPT_CHECK_AND_RETURN(v, SQ_OK);
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: writes crash diagnostics breadcrumbs from script
+//-----------------------------------------------------------------------------
+static SQRESULT ServerScript_SDK_WriteRuntimeBreadcrumb(HSQUIRRELVM v)
+{
+    const SQChar* pszSource = nullptr;
+    const SQChar* pszDetail = nullptr;
+
+    sq_getstring(v, 2, &pszSource);
+    if (sq_gettop(v) >= 3)
+        sq_getstring(v, 3, &pszDetail);
+
+    if (VALID_CHARSTAR(pszSource))
+        SDK_WriteRuntimeBreadcrumb(pszSource, VALID_CHARSTAR(pszDetail) ? pszDetail : nullptr);
+
+    SCRIPT_CHECK_AND_RETURN(v, SQ_OK);
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: writes match report diagnostics to the dedicated debug log
+//-----------------------------------------------------------------------------
+static SQRESULT ServerScript_MatchReport_DebugNote(HSQUIRRELVM v)
+{
+    const SQChar* pszMessage = nullptr;
+    sq_getstring(v, 2, &pszMessage);
+
+    if (VALID_CHARSTAR(pszMessage))
+        SV_MatchReportDebugNote(pszMessage);
+
+    SCRIPT_CHECK_AND_RETURN(v, SQ_OK);
+}
+
+static bool ServerScript_GetPlayerArg(HSQUIRRELVM v, const SQInteger nArg, CPlayer*& outPlayer)
+{
+    if (sq_gettop(v) < nArg)
+    {
+        v_SQVM_ScriptError("Missing entity argument %d", nArg - 1);
+        return false;
+    }
+
+    SQObjectPtr& obj = stack_get(v, nArg);
+    if (sq_type(obj) != OT_ENTITY)
+    {
+        v_SQVM_ScriptError("Argument %d must be an entity", nArg - 1);
+        return false;
+    }
+
+    CPlayer* const pCandidate = reinterpret_cast<CPlayer*>(_userpointer(obj));
+    if (!pCandidate)
+    {
+        v_SQVM_ScriptError("Argument %d was a null entity", nArg - 1);
+        return false;
+    }
+
+    if (!g_pServer)
+    {
+        v_SQVM_ScriptError("Argument %d cannot be validated without an active server", nArg - 1);
+        return false;
+    }
+
+    for (int i = 0; i < g_pServer->GetMaxClients(); ++i)
+    {
+        CClient* const pClient = g_pServer->GetClient(i);
+        if (!pClient || !pClient->IsConnected())
+            continue;
+
+        if (UTIL_PlayerByIndex(pClient->GetHandle()) != pCandidate)
+            continue;
+
+        outPlayer = pCandidate;
+        return true;
+    }
+
+    v_SQVM_ScriptError("Argument %d must be a connected player entity", nArg - 1);
+    return false;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: records a weapon kill for match-end reporting
+//-----------------------------------------------------------------------------
+static SQRESULT ServerScript_MatchReport_RecordWeaponKill(HSQUIRRELVM v)
+{
+    CPlayer* pPlayer = nullptr;
+    const SQChar* pszWeaponName = nullptr;
+
+    if (!ServerScript_GetPlayerArg(v, 2, pPlayer))
+        return SQ_ERROR;
+
+    sq_getstring(v, 3, &pszWeaponName);
+
+    if (!VALID_CHARSTAR(pszWeaponName))
+    {
+        v_SQVM_ScriptError("Empty or null weapon name");
+        SCRIPT_CHECK_AND_RETURN(v, SQ_ERROR);
+    }
+
+    SV_RecordMatchReportWeaponKill(pPlayer, pszWeaponName);
+    SCRIPT_CHECK_AND_RETURN(v, SQ_OK);
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: records a weapon kill for match-end reporting by stable player UID
+//-----------------------------------------------------------------------------
+static SQRESULT ServerScript_MatchReport_RecordWeaponKillByUid(HSQUIRRELVM v)
+{
+    const SQChar* pszPlayerUid = nullptr;
+    const SQChar* pszPlayerName = nullptr;
+    const SQChar* pszWeaponName = nullptr;
+
+    sq_getstring(v, 2, &pszPlayerUid);
+    sq_getstring(v, 3, &pszPlayerName);
+    sq_getstring(v, 4, &pszWeaponName);
+
+    if (!VALID_CHARSTAR(pszWeaponName))
+    {
+        v_SQVM_ScriptError("Empty or null weapon name");
+        SCRIPT_CHECK_AND_RETURN(v, SQ_ERROR);
+    }
+
+    SV_RecordMatchReportWeaponKillByUid(pszPlayerUid, pszPlayerName, pszWeaponName);
+    SCRIPT_CHECK_AND_RETURN(v, SQ_OK);
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: records a kill event for match-end reporting
+//-----------------------------------------------------------------------------
+static SQRESULT ServerScript_MatchReport_RecordPlayerKill(HSQUIRRELVM v)
+{
+    CPlayer* pAttacker = nullptr;
+    const SQChar* pszVictimUid = nullptr;
+    const SQChar* pszVictimName = nullptr;
+    const SQChar* pszWeaponName = nullptr;
+    SQInteger nDamageSourceId = 0;
+
+    if (!ServerScript_GetPlayerArg(v, 2, pAttacker))
+        return SQ_ERROR;
+
+    sq_getstring(v, 3, &pszVictimUid);
+    sq_getstring(v, 4, &pszVictimName);
+    sq_getstring(v, 5, &pszWeaponName);
+    sq_getinteger(v, 6, &nDamageSourceId);
+
+    if (!VALID_CHARSTAR(pszWeaponName))
+    {
+        v_SQVM_ScriptError("Empty or null weapon name");
+        SCRIPT_CHECK_AND_RETURN(v, SQ_ERROR);
+    }
+
+    if (!VALID_CHARSTAR(pszVictimUid))
+    {
+        SV_RecordMatchReportWeaponKill(pAttacker, pszWeaponName);
+        SCRIPT_CHECK_AND_RETURN(v, SQ_OK);
+    }
+
+    SV_RecordMatchReportPlayerKill(pAttacker, pszVictimUid, pszVictimName, pszWeaponName, static_cast<int>(nDamageSourceId));
+    SCRIPT_CHECK_AND_RETURN(v, SQ_OK);
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: records a kill event for match-end reporting by stable player UIDs
+//-----------------------------------------------------------------------------
+static SQRESULT ServerScript_MatchReport_RecordPlayerKillByUid(HSQUIRRELVM v)
+{
+    const SQChar* pszAttackerUid = nullptr;
+    const SQChar* pszAttackerName = nullptr;
+    const SQChar* pszVictimUid = nullptr;
+    const SQChar* pszVictimName = nullptr;
+    const SQChar* pszWeaponName = nullptr;
+    SQInteger nDamageSourceId = 0;
+
+    sq_getstring(v, 2, &pszAttackerUid);
+    sq_getstring(v, 3, &pszAttackerName);
+    sq_getstring(v, 4, &pszVictimUid);
+    sq_getstring(v, 5, &pszVictimName);
+    sq_getstring(v, 6, &pszWeaponName);
+    sq_getinteger(v, 7, &nDamageSourceId);
+
+    if (!VALID_CHARSTAR(pszWeaponName))
+    {
+        v_SQVM_ScriptError("Empty or null weapon name");
+        SCRIPT_CHECK_AND_RETURN(v, SQ_ERROR);
+    }
+
+    SV_RecordMatchReportPlayerKillByUid(pszAttackerUid, pszAttackerName, pszVictimUid, pszVictimName,
+        pszWeaponName, static_cast<int>(nDamageSourceId));
+    SCRIPT_CHECK_AND_RETURN(v, SQ_OK);
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: records weapon shots for match-end reporting
+//-----------------------------------------------------------------------------
+static SQRESULT ServerScript_MatchReport_RecordWeaponShot(HSQUIRRELVM v)
+{
+    CPlayer* pPlayer = nullptr;
+    const SQChar* pszWeaponName = nullptr;
+    SQInteger nShots = 0;
+
+    if (!ServerScript_GetPlayerArg(v, 2, pPlayer))
+        return SQ_ERROR;
+
+    sq_getstring(v, 3, &pszWeaponName);
+    sq_getinteger(v, 4, &nShots);
+
+    if (!VALID_CHARSTAR(pszWeaponName))
+    {
+        v_SQVM_ScriptError("Empty or null weapon name");
+        SCRIPT_CHECK_AND_RETURN(v, SQ_ERROR);
+    }
+
+    SV_RecordMatchReportWeaponShot(pPlayer, pszWeaponName, static_cast<int>(nShots));
+    SCRIPT_CHECK_AND_RETURN(v, SQ_OK);
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: records weapon shots for match-end reporting by stable player UID
+//-----------------------------------------------------------------------------
+static SQRESULT ServerScript_MatchReport_RecordWeaponShotByUid(HSQUIRRELVM v)
+{
+    const SQChar* pszPlayerUid = nullptr;
+    const SQChar* pszPlayerName = nullptr;
+    const SQChar* pszWeaponName = nullptr;
+    SQInteger nShots = 0;
+
+    sq_getstring(v, 2, &pszPlayerUid);
+    sq_getstring(v, 3, &pszPlayerName);
+    sq_getstring(v, 4, &pszWeaponName);
+    sq_getinteger(v, 5, &nShots);
+
+    if (!VALID_CHARSTAR(pszWeaponName))
+    {
+        v_SQVM_ScriptError("Empty or null weapon name");
+        SCRIPT_CHECK_AND_RETURN(v, SQ_ERROR);
+    }
+
+    SV_RecordMatchReportWeaponShotByUid(pszPlayerUid, pszPlayerName, pszWeaponName, static_cast<int>(nShots));
+    SCRIPT_CHECK_AND_RETURN(v, SQ_OK);
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: records weapon hits and damage for match-end reporting
+//-----------------------------------------------------------------------------
+static SQRESULT ServerScript_MatchReport_RecordWeaponHit(HSQUIRRELVM v)
+{
+    CPlayer* pPlayer = nullptr;
+    const SQChar* pszWeaponName = nullptr;
+    SQFloat flDamage = 0.0f;
+    SQInteger nHits = 0;
+    SQFloat flBulletsHit = 0.0f;
+    SQInteger nHeadshots = 0;
+
+    if (!ServerScript_GetPlayerArg(v, 2, pPlayer))
+        return SQ_ERROR;
+
+    sq_getstring(v, 3, &pszWeaponName);
+    sq_getfloat(v, 4, &flDamage);
+    sq_getinteger(v, 5, &nHits);
+    sq_getfloat(v, 6, &flBulletsHit);
+    sq_getinteger(v, 7, &nHeadshots);
+
+    if (!VALID_CHARSTAR(pszWeaponName))
+    {
+        v_SQVM_ScriptError("Empty or null weapon name");
+        SCRIPT_CHECK_AND_RETURN(v, SQ_ERROR);
+    }
+
+    SV_RecordMatchReportWeaponHit(pPlayer, pszWeaponName, static_cast<float>(flDamage), static_cast<int>(nHits), static_cast<float>(flBulletsHit), static_cast<int>(nHeadshots));
+    SCRIPT_CHECK_AND_RETURN(v, SQ_OK);
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: records weapon hits and damage for match-end reporting by stable player UID
+//-----------------------------------------------------------------------------
+static SQRESULT ServerScript_MatchReport_RecordWeaponHitByUid(HSQUIRRELVM v)
+{
+    const SQChar* pszPlayerUid = nullptr;
+    const SQChar* pszPlayerName = nullptr;
+    const SQChar* pszWeaponName = nullptr;
+    SQFloat flDamage = 0.0f;
+    SQInteger nHits = 0;
+    SQFloat flBulletsHit = 0.0f;
+    SQInteger nHeadshots = 0;
+
+    sq_getstring(v, 2, &pszPlayerUid);
+    sq_getstring(v, 3, &pszPlayerName);
+    sq_getstring(v, 4, &pszWeaponName);
+    sq_getfloat(v, 5, &flDamage);
+    sq_getinteger(v, 6, &nHits);
+    sq_getfloat(v, 7, &flBulletsHit);
+    sq_getinteger(v, 8, &nHeadshots);
+
+    if (!VALID_CHARSTAR(pszWeaponName))
+    {
+        v_SQVM_ScriptError("Empty or null weapon name");
+        SCRIPT_CHECK_AND_RETURN(v, SQ_ERROR);
+    }
+
+    SV_RecordMatchReportWeaponHitByUid(pszPlayerUid, pszPlayerName, pszWeaponName,
+        static_cast<float>(flDamage), static_cast<int>(nHits), static_cast<float>(flBulletsHit),
+        static_cast<int>(nHeadshots));
     SCRIPT_CHECK_AND_RETURN(v, SQ_OK);
 }
 
@@ -745,6 +1050,16 @@ void Script_RegisterCoreServerFunctions(CSquirrelVM* s)
 
     DEFINE_SERVER_SCRIPTFUNC_NAMED(s, SetAutoReloadState, "Set whether we can auto-reload the server", "void", "bool canAutoReload", false);
     DEFINE_SERVER_SCRIPTFUNC_NAMED(s, GetSessionID, "Gets our current session ID", "string", "", false);
+    DEFINE_SERVER_SCRIPTFUNC_NAMED(s, SDK_WriteRuntimeBreadcrumb, "Writes runtime breadcrumb for crash diagnostics", "void", "string source, string detail", false);
+    DEFINE_SERVER_SCRIPTFUNC_NAMED(s, MatchReport_DebugNote, "Writes match report diagnostics when sv_match_report_debug is enabled", "void", "string message", false);
+    DEFINE_SERVER_SCRIPTFUNC_NAMED(s, MatchReport_RecordWeaponKill, "Records a weapon kill for match-end reporting", "void", "entity player, string weaponName", false);
+    DEFINE_SERVER_SCRIPTFUNC_NAMED(s, MatchReport_RecordPlayerKill, "Records a player kill event for match-end reporting", "void", "entity attacker, string victimUid, string victimName, string weaponName, int damageSourceId", false);
+    DEFINE_SERVER_SCRIPTFUNC_NAMED(s, MatchReport_RecordWeaponShot, "Records weapon shots for match-end reporting", "void", "entity player, string weaponName, int shots", false);
+    DEFINE_SERVER_SCRIPTFUNC_NAMED(s, MatchReport_RecordWeaponHit, "Records weapon hits and damage for match-end reporting", "void", "entity player, string weaponName, float damage, int hits, float bulletsHit, int headshots", false);
+    DEFINE_SERVER_SCRIPTFUNC_NAMED(s, MatchReport_RecordWeaponKillByUid, "Records a weapon kill for match-end reporting by stable player UID", "void", "string uid, string playerName, string weaponName", false);
+    DEFINE_SERVER_SCRIPTFUNC_NAMED(s, MatchReport_RecordPlayerKillByUid, "Records a player kill event for match-end reporting by stable player UIDs", "void", "string attackerUid, string attackerName, string victimUid, string victimName, string weaponName, int damageSourceId", false);
+    DEFINE_SERVER_SCRIPTFUNC_NAMED(s, MatchReport_RecordWeaponShotByUid, "Records weapon shots for match-end reporting by stable player UID", "void", "string uid, string playerName, string weaponName, int shots", false);
+    DEFINE_SERVER_SCRIPTFUNC_NAMED(s, MatchReport_RecordWeaponHitByUid, "Records weapon hits and damage for match-end reporting by stable player UID", "void", "string uid, string playerName, string weaponName, float damage, int hits, float bulletsHit, int headshots", false);
 
     DEFINE_SERVER_SCRIPTFUNC_NAMED(s, NavMesh_GetNearestPos, "Finds the nearest position to the provided point on the hull's NavMesh using the hull's bounds as extents", "vector ornull", "vector searchPoint, int hullType", false);
     DEFINE_SERVER_SCRIPTFUNC_NAMED(s, NavMesh_GetNearestPosInBounds, "Finds the nearest position to the provided point on the hull's NavMesh using provided bounds as extents", "vector ornull", "vector searchPoint, vector halfExtents, int hullType", false);

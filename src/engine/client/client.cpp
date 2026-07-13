@@ -16,6 +16,7 @@
 #include "engine/client/client.h"
 #ifndef CLIENT_DLL
 #include "networksystem/hostmanager.h"
+#include "networksystem/pylon.h"
 #include "jwt/include/decode.h"
 #include "mbedtls/include/mbedtls/sha256.h"
 #include "game/server/recipientfilter.h"
@@ -33,7 +34,15 @@
 void CClient::Clear(void)
 {
 #ifndef CLIENT_DLL
-	GetClientExtended()->Reset(); // Reset extended data.
+	if (CClientExtended* const pExtended = GetClientExtended())
+	{
+		pExtended->Reset(); // Reset extended data.
+	}
+	else
+	{
+		Warning(eDLL_T::SERVER, "Skipped client extended reset for slot #%u because extended data is unavailable\n",
+			m_nUserID);
+	}
 #endif // !CLIENT_DLL
 	CClient__Clear(this);
 
@@ -61,6 +70,9 @@ void CClient::VClear(CClient* pClient)
 //---------------------------------------------------------------------------------
 CClientExtended* CClient::GetClientExtended(void) const 
 {
+	if (!m_pServer || m_nUserID >= MAX_PLAYERS)
+		return nullptr;
+
 	return m_pServer->GetClientExtended(m_nUserID);
 }
 #endif // !CLIENT_DLL
@@ -83,20 +95,32 @@ static std::mutex s_jwtPublicKeyMutex;
 
 void CClient::CheckMSForNewAuthKey()
 {
-	std::thread([]()
+	PylonRequestConfig_t requestConfig;
+	g_MasterServer.CaptureRequestConfig(requestConfig);
+
+	std::string currentHash;
+	{
+		std::lock_guard<std::mutex> lock(s_jwtPublicKeyMutex);
+		currentHash = JWT_PUBLIC_KEY_HASH;
+	}
+
+	std::thread([requestConfig, currentHash]()
 		{
 			MSAuthKeyData_t keyData;
 			std::string msg;
 			
-			if (g_MasterServer.GetAuthKey(JWT_PUBLIC_KEY_HASH, keyData, msg))
+			if (g_MasterServer.GetAuthKey(requestConfig, currentHash, keyData, msg))
 			{
 				// If keyNeedsUpdate is false, there are no valid keyData or keyHash values, as the masterserver will not have
 				// sent them in the response
-				if (keyData.keyNeedsUpdate && (JWT_PUBLIC_KEY.length() == 0 || JWT_PUBLIC_KEY_HASH != keyData.keyHash))
+				if (keyData.keyNeedsUpdate)
 				{
 					std::lock_guard<std::mutex> lock(s_jwtPublicKeyMutex);
-					JWT_PUBLIC_KEY = keyData.keyData;
-					JWT_PUBLIC_KEY_HASH = keyData.keyHash;
+					if (JWT_PUBLIC_KEY.length() == 0 || JWT_PUBLIC_KEY_HASH != keyData.keyHash)
+					{
+						JWT_PUBLIC_KEY = keyData.keyData;
+						JWT_PUBLIC_KEY_HASH = keyData.keyHash;
+					}
 				}
 			}
 			else
@@ -117,7 +141,8 @@ bool CClient::Authenticate(const char* const playerName, char* const reasonBuf, 
 {
 #ifndef CLIENT_DLL
 	// don't bother checking origin auth on bots or local clients
-	if (IsFakeClient() || GetNetChan()->GetRemoteAddress().IsLoopback())
+	const CNetChan* const pNetChan = GetNetChan();
+	if (IsFakeClient() || !pNetChan || pNetChan->GetRemoteAddress().IsLoopback())
 		return true;
 
 	l8w8jwt_claim* claims = nullptr;
@@ -133,9 +158,12 @@ bool CClient::Authenticate(const char* const playerName, char* const reasonBuf, 
 			return false; \
 		} while(0)\
 
-	KeyValues* const cl_onlineAuthTokenKv = this->m_ConVars->FindKey("cl_onlineAuthToken");
-	KeyValues* const cl_onlineAuthTokenSignature1Kv = this->m_ConVars->FindKey("cl_onlineAuthTokenSignature1");
-	KeyValues* const cl_onlineAuthTokenSignature2Kv = this->m_ConVars->FindKey("cl_onlineAuthTokenSignature2");
+	if (!m_ConVars)
+		ERROR_AND_RETURN("Missing userinfo");
+
+	KeyValues* const cl_onlineAuthTokenKv = m_ConVars->FindKey("cl_onlineAuthToken");
+	KeyValues* const cl_onlineAuthTokenSignature1Kv = m_ConVars->FindKey("cl_onlineAuthTokenSignature1");
+	KeyValues* const cl_onlineAuthTokenSignature2Kv = m_ConVars->FindKey("cl_onlineAuthTokenSignature2");
 
 	if (!cl_onlineAuthTokenKv)
 		ERROR_AND_RETURN("Missing token");
@@ -154,7 +182,9 @@ bool CClient::Authenticate(const char* const playerName, char* const reasonBuf, 
 
 	// Note: don't check on this as this part is optional, and only used if the
 	// token signature length is > 255 characters.
-	const char* const onlineAuthTokenSignature2 = cl_onlineAuthTokenSignature2Kv->GetString();
+	const char* const onlineAuthTokenSignature2 = cl_onlineAuthTokenSignature2Kv
+		? cl_onlineAuthTokenSignature2Kv->GetString()
+		: "";
 
 	char fullToken[1024]; // enough buffer for 3x255, which is cvar count * userinfo str limit.
 	const int tokenLen = snprintf(fullToken, sizeof(fullToken), "%s.%s%s", 
@@ -257,7 +287,15 @@ bool CClient::Connect(const char* szName, CNetChan* pNetChan, bool bFakePlayer,
 	CUtlVector<NET_SetConVar::cvar_t>* conVars, char* szMessage, int nMessageSize)
 {
 #ifndef CLIENT_DLL
-	GetClientExtended()->Reset(); // Reset extended data.
+	if (CClientExtended* const pExtended = GetClientExtended())
+	{
+		pExtended->Reset(); // Reset extended data.
+	}
+	else
+	{
+		Warning(eDLL_T::SERVER, "Skipped client extended reset during connect for slot #%u because extended data is unavailable\n",
+			m_nUserID);
+	}
 #endif
 
 	if (!CClient__Connect(this, szName, pNetChan, bFakePlayer, conVars, szMessage, nMessageSize))
@@ -474,6 +512,9 @@ CClient* AdjustShiftedThisPointer(CClient* shiftedPointer)
 bool CClient::VProcessStringCmd(CClient* pClient, NET_StringCmd* pMsg)
 {
 #ifndef CLIENT_DLL
+	if (!pClient || !pMsg)
+		return true;
+
 	CClient* const pClient_Adj = AdjustShiftedThisPointer(pClient);
 
 	// Jettison the cmd if the client isn't active.
@@ -481,6 +522,12 @@ bool CClient::VProcessStringCmd(CClient* pClient, NET_StringCmd* pMsg)
 		return true;
 
 	CClientExtended* const pSlot = pClient_Adj->GetClientExtended();
+	if (!pSlot)
+	{
+		Warning(eDLL_T::SERVER, "Ignoring string command from slot #%i ('%llu') because extended data is unavailable\n",
+			pClient_Adj->GetUserID(), pClient_Adj->GetNucleusID());
+		return true;
+	}
 
 	const double flStartTime = Plat_FloatTime();
 	const int nCmdQuotaLimit = sv_quota_stringCmdsPerSecond.GetInt();
@@ -506,8 +553,9 @@ bool CClient::VProcessStringCmd(CClient* pClient, NET_StringCmd* pMsg)
 
 		if (!V_IsValidUTF8(pCmd))
 		{
+			const CNetChan* const pNetChan = pClient_Adj->GetNetChan();
 			Warning(eDLL_T::SERVER, "Removing client '%s' from slot #%i ('%llu' sent invalid string command!)\n",
-				pClient_Adj->GetNetChan()->GetAddress(), pClient_Adj->GetUserID(), pClient_Adj->GetNucleusID());
+				pNetChan ? pNetChan->GetAddress() : "<no netchan>", pClient_Adj->GetUserID(), pClient_Adj->GetNucleusID());
 
 			pClient_Adj->Disconnect(Reputation_t::REP_MARK_BAD, "#DISCONNECT_INVALID_STRINGCMD");
 			return true;
@@ -523,8 +571,9 @@ bool CClient::VProcessStringCmd(CClient* pClient, NET_StringCmd* pMsg)
 
 	if (pSlot->m_nStringCommandQuotaCount > nCmdQuotaLimit)
 	{
+		const CNetChan* const pNetChan = pClient_Adj->GetNetChan();
 		Warning(eDLL_T::SERVER, "Removing client '%s' from slot #%i ('%llu' exceeded string command quota!)\n",
-			pClient_Adj->GetNetChan()->GetAddress(), pClient_Adj->GetUserID(), pClient_Adj->GetNucleusID());
+			pNetChan ? pNetChan->GetAddress() : "<no netchan>", pClient_Adj->GetUserID(), pClient_Adj->GetNucleusID());
 
 		pClient_Adj->Disconnect(Reputation_t::REP_MARK_BAD, "#DISCONNECT_STRINGCMD_OVERFLOW");
 		return true;
@@ -543,8 +592,17 @@ bool CClient::VProcessStringCmd(CClient* pClient, NET_StringCmd* pMsg)
 bool CClient::VProcessSetConVar(CClient* pClient, NET_SetConVar* pMsg)
 {
 #ifndef CLIENT_DLL
+	if (!pClient || !pMsg)
+		return true;
+
 	CClient* const pAdj = AdjustShiftedThisPointer(pClient);
 	CClientExtended* const pSlot = pAdj->GetClientExtended();
+	if (!pSlot || !pAdj->m_ConVars)
+	{
+		Warning(eDLL_T::SERVER, "Ignoring UserInfo update from slot #%i ('%llu') because client state is incomplete: extended=%p convars=%p\n",
+			pAdj->GetUserID(), pAdj->GetNucleusID(), pSlot, pAdj->m_ConVars);
+		return true;
+	}
 
 	// This loop never exceeds 255 iterations, NET_SetConVar::ReadFromBuffer(...)
 	// reads and inserts up to 255 entries in the vector (reads a byte for size).
@@ -552,7 +610,13 @@ bool CClient::VProcessSetConVar(CClient* pClient, NET_SetConVar* pMsg)
 	{
 		const NET_SetConVar::cvar_t& entry = pMsg->m_ConVars[i];
 		const char* const name = entry.name;
-		const char* const value = entry.value;
+		const char* const value = entry.value ? entry.value : "";
+		if (!VALID_CHARSTAR(name))
+		{
+			DevWarning(eDLL_T::SERVER, "Ignoring UserInfo update from \"%s\" with empty variable name\n",
+				pAdj->GetClientName());
+			continue;
+		}
 
 		// Discard any ConVar change request if it contains funky characters.
 		bool bFunky = false;
@@ -601,7 +665,16 @@ bool CClient::VProcessSetConVar(CClient* pClient, NET_SetConVar* pMsg)
 //---------------------------------------------------------------------------------
 static void InformClientAboutCommsBanTriggeredByVoice(CClient* const pClient)
 {
+	if (!pClient)
+		return;
+
 	CClientExtended* const pClientExtended = pClient->GetClientExtended();
+	if (!pClientExtended)
+	{
+		Warning(eDLL_T::SERVER, "Skipped comms ban voice prompt for slot #%i ('%llu') because extended data is unavailable\n",
+			pClient->GetUserID(), pClient->GetNucleusID());
+		return;
+	}
 
 	if (!pClientExtended->HasBeenPromptedFromVoiceAboutBan())
 	{
@@ -614,7 +687,7 @@ static void InformClientAboutCommsBanTriggeredByVoice(CClient* const pClient)
 		v_UserMessageBegin(&filter, "SayText", 2);
 
 		MessageWriteByte(pPlayer->GetEdict());
-		MessageWriteString(pClient->GetClientExtended()->GetCommsMuteDisplayMessage());
+		MessageWriteString(pClientExtended->GetCommsMuteDisplayMessage());
 		MessageWriteBool(true);
 
 		MessageEnd();
@@ -667,6 +740,9 @@ void CClientExtended::BuildCommsBanDisplayMessage(const char* pszReasonStr, cons
 bool CClient::VProcessVoiceData(CClient* pClient, CLC_VoiceData* pMsg)
 {
 #ifndef CLIENT_DLL
+	if (!pClient || !pMsg)
+		return true;
+
 	char voiceDataBuffer[4096];
 	const int bitsRead = pMsg->m_DataIn.ReadBitsClamped(voiceDataBuffer, pMsg->m_nLength);
 
@@ -674,9 +750,16 @@ bool CClient::VProcessVoiceData(CClient* pClient, CLC_VoiceData* pMsg)
 		return false;
 
 	CClient* const pAdj = AdjustShiftedThisPointer(pClient);
+	CClientExtended* const pClientExtended = pAdj->GetClientExtended();
+	if (!pClientExtended)
+	{
+		Warning(eDLL_T::SERVER, "Ignoring voice data from slot #%i ('%llu') because extended data is unavailable\n",
+			pAdj->GetUserID(), pAdj->GetNucleusID());
+		return true;
+	}
 	
 	//Is our client communication banned
-	if (pAdj->GetClientExtended()->IsClientCommsBanned())
+	if (pClientExtended->IsClientCommsBanned())
 	{
 		//Should we apply the communication ban based on what the host has decided
 		if (SV_ShouldApplyVoiceChatGlobalMutes())
@@ -701,6 +784,9 @@ bool CClient::VProcessVoiceData(CClient* pClient, CLC_VoiceData* pMsg)
 bool CClient::VProcessDurangoVoiceData(CClient* pClient, CLC_DurangoVoiceData* pMsg)
 {
 #ifndef CLIENT_DLL
+	if (!pClient || !pMsg)
+		return true;
+
 	char voiceDataBuffer[4096];
 	const int bitsRead = pMsg->m_DataIn.ReadBitsClamped(voiceDataBuffer, pMsg->m_nLength);
 
@@ -708,9 +794,16 @@ bool CClient::VProcessDurangoVoiceData(CClient* pClient, CLC_DurangoVoiceData* p
 		return false;
 
 	CClient* const pAdj = AdjustShiftedThisPointer(pClient);
+	CClientExtended* const pClientExtended = pAdj->GetClientExtended();
+	if (!pClientExtended)
+	{
+		Warning(eDLL_T::SERVER, "Ignoring durango voice data from slot #%i ('%llu') because extended data is unavailable\n",
+			pAdj->GetUserID(), pAdj->GetNucleusID());
+		return true;
+	}
 
 	//Is our client communication banned
-	if (pAdj->GetClientExtended()->IsClientCommsBanned())
+	if (pClientExtended->IsClientCommsBanned())
 	{
 		//Should we apply the communication ban based on what the host has decided
 		if (SV_ShouldApplyVoiceChatGlobalMutes())

@@ -214,21 +214,29 @@ bool CConsole::DrawSurface(void)
 
     // Reserve enough left-over height and width for 1 separator + 1 input text
     const float footerWidthReserve = style.ItemSpacing.y + ImGui::GetWindowWidth();
-    m_colorTextLogger.GetFilter().Draw("Filter (inc,-exc)", footerWidthReserve - 350);
+
+    bool shouldScrollBack = false;
+    int scrollBackAmount = 0;
+    {
+        AUTO_LOCK(m_colorTextLoggerMutex);
+        m_colorTextLogger.GetFilter().Draw("Filter (inc,-exc)", footerWidthReserve - 350);
+        shouldScrollBack = !m_colorTextLogger.IsScrolledToBottom() && m_scrollBackAmount > 0;
+        scrollBackAmount = m_scrollBackAmount;
+        m_scrollBackAmount = 0;
+    }
 
     ImGui::Separator();
 
     ///////////////////////////////////////////////////////////////////////
-    if (!m_colorTextLogger.IsScrolledToBottom() && m_scrollBackAmount > 0)
+    if (shouldScrollBack)
     {
         const ImGuiID windowId = m_mainWindow->GetID(m_loggerLabel);
 
         char windowName[128];
         snprintf(windowName, sizeof(windowName), "%s/%s_%08X", m_surfaceLabel, m_loggerLabel, windowId);
 
-        ImGui::SetWindowScrollY(windowName, m_lastFrameScrollPos.y - m_scrollBackAmount * fontSize.y);
+        ImGui::SetWindowScrollY(windowName, m_lastFrameScrollPos.y - scrollBackAmount * fontSize.y);
     }
-    m_scrollBackAmount = 0;
 
     // Reserve enough left-over height for 2 text elements.
     float footerHeightReserve = ImGui::GetFrameHeight() * 2;
@@ -337,7 +345,10 @@ bool CConsole::DrawSurface(void)
 //-----------------------------------------------------------------------------
 void CConsole::DrawOptionsPanel(void)
 {
-    ImGui::Checkbox("Auto-scroll##Console_DrawOptionsPanel", &m_colorTextLogger.m_bAutoScroll);
+    {
+        AUTO_LOCK(m_colorTextLoggerMutex);
+        ImGui::Checkbox("Auto-scroll##Console_DrawOptionsPanel", &m_colorTextLogger.m_bAutoScroll);
+    }
 
     ImGui::SameLine();
     ImGui::Spacing();
@@ -835,8 +846,11 @@ void CConsole::ProcessCommand(const char* const inputText)
 
     AddHistory(commandFormatted.c_str());
 
-    m_colorTextLogger.ShouldScrollToStart(true);
-    m_colorTextLogger.ShouldScrollToBottom(true);
+    {
+        AUTO_LOCK(m_colorTextLoggerMutex);
+        m_colorTextLogger.ShouldScrollToStart(true);
+        m_colorTextLogger.ShouldScrollToBottom(true);
+    }
 }
 
 //-----------------------------------------------------------------------------

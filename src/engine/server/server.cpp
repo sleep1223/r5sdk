@@ -13,10 +13,13 @@
 #include "tier0/frametask.h"
 #include "tier1/cvar.h"
 #include "tier1/strtools.h"
+#include "engine/net.h"
 #include "engine/server/sv_main.h"
 #include "engine/server/server.h"
 #include "networksystem/pylon.h"
 #include "networksystem/bansystem.h"
+#include "networksystem/playeraccess.h"
+#include "networksystem/remoteapi.h"
 #include "ebisusdk/EbisuSDK.h"
 #include "public/edict.h"
 #include "pluginsystem/pluginsystem.h"
@@ -174,19 +177,26 @@ CClient* CServer::ConnectClient(CServer* pServer, user_creds_s* pChallenge)
 	}
 
 	CClient* const pClient = CServer__ConnectClient(pServer, pChallenge);
+	if (!pClient)
+		return nullptr;
 
 	for (auto& callback : !PluginSystem()->GetConnectClientCallbacks())
 	{
 		if (!callback.Function()(pServer, pClient, pChallenge))
 		{
-			pClient->Disconnect(REP_MARK_BAD, "#Valve_Reject_Banned");
+			if (pClient->IsActive())
+				pClient->Disconnect(REP_MARK_BAD, "#Valve_Reject_Banned");
+			else
+				NET_RemoveChannel(pClient, pClient->GetUserID(), "#Valve_Reject_Banned", 1, true);
+
 			return nullptr;
 		}
 	}
 
 	if (pClient && sv_globalBanlist.GetBool())
 	{
-		if (!pClient->GetNetChan()->GetRemoteAddress().IsLoopback())
+		const CNetChan* const pNetChan = pClient->GetNetChan();
+		if (pNetChan && !pNetChan->GetRemoteAddress().IsLoopback())
 		{
 			if (!pszAddresBuffer)
 			{
@@ -196,10 +206,61 @@ CClient* CServer::ConnectClient(CServer* pServer, user_creds_s* pChallenge)
 
 			const string addressBufferCopy(pszAddresBuffer);
 			const string personaNameCopy(pszPersonaName);
+			PylonRequestConfig_t pylonRequestConfig;
+			g_MasterServer.CaptureRequestConfig(pylonRequestConfig);
+			const int nClientUserID = pClient->GetUserID();
+			const int nClientHandle = pClient->GetHandle();
 
-			std::thread th(SV_CheckForBanAndDisconnect, pClient, addressBufferCopy, nNucleusID, personaNameCopy, nPort);
-			th.detach();
+			SV_StartRemoteApiWorker("pylon-ban-check",
+				[nClientUserID, nClientHandle, addressBufferCopy, nNucleusID, personaNameCopy, nPort, pylonRequestConfig]
+				{
+					SV_CheckForBanAndDisconnect(nClientUserID, nClientHandle, addressBufferCopy,
+						nNucleusID, personaNameCopy, nPort, pylonRequestConfig);
+			});
 		}
+	}
+
+	if (pClient && sv_player_access_enable.GetBool())
+	{
+		const CNetChan* const pNetChan = pClient->GetNetChan();
+		if (pNetChan && !pNetChan->GetRemoteAddress().IsLoopback())
+		{
+			if (!pszAddresBuffer)
+			{
+				pChallenge->netAdr.ToString(szAddresBuffer, sizeof(szAddresBuffer), true);
+				pszAddresBuffer = szAddresBuffer;
+			}
+
+			const string addressBufferCopy(pszAddresBuffer);
+			const string personaNameCopy(pszPersonaName);
+			string serverIp;
+			int serverPort = 0;
+			SV_GetRemoteServerAddress(serverIp, serverPort);
+
+			PlayerAccessCheckRequest_t accessRequest;
+			if (SV_CapturePlayerAccessCheckRequest(accessRequest))
+			{
+				const int nClientUserID = pClient->GetUserID();
+				const int nClientHandle = pClient->GetHandle();
+
+				SV_StartRemoteApiWorker("player-access-check",
+					[nClientUserID, nClientHandle, addressBufferCopy, nNucleusID, personaNameCopy, nPort, serverIp, serverPort, accessRequest]
+					{
+						SV_CheckPlayerAccessAndDisconnect(nClientUserID, nClientHandle, addressBufferCopy,
+							nNucleusID, personaNameCopy, nPort, serverIp, serverPort, accessRequest);
+					});
+			}
+		}
+		else if (bEnableLogging)
+		{
+			Msg(eDLL_T::SERVER, "Player access check skipped for '%llu' (missing netchan or loopback address)\n",
+				nNucleusID);
+		}
+	}
+	else if (pClient && bEnableLogging)
+	{
+		Msg(eDLL_T::SERVER, "Player access check disabled for '%llu' (sv_player_access_enable=0)\n",
+			nNucleusID);
 	}
 
 	return pClient;
@@ -223,6 +284,8 @@ void CServer::BroadcastMessage(CNetMessage* const msg, const bool onlyActive, co
 void CServer::RunFrame(CServer* pServer)
 {
 	CServer__RunFrame(pServer);
+	SV_LogRemoteApiConfigIfEnabled();
+	SV_RunPlayerAccessOnlineReportFrame(pServer);
 
 	for (auto& callback : !PluginSystem()->GetServerFrameCallbacks())
 		callback.Function()(pServer);
@@ -252,4 +315,3 @@ void VServer::Detour(const bool bAttach) const
 ///////////////////////////////////////////////////////////////////////////////
 CServer* g_pServer = nullptr;
 CClientExtended CServer::sm_ClientsExtended[MAX_PLAYERS];
-
