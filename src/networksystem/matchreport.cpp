@@ -72,7 +72,6 @@ struct MatchReportPlayer_t
 	string m_svUID;
 	string m_svPersonaName;
 	string m_svInputDevice = "unknown";
-	MatchMetrics m_Metrics = {};
 	vector<pair<string, int>> m_WeaponKills;
 	vector<MatchReportWeaponStat_t> m_WeaponStats;
 };
@@ -87,11 +86,9 @@ struct MatchReportPlayerSnapshot_t
 	NucleusID_t m_nNucleusID = 0;
 	bool m_bConnected = false;
 	bool m_bBot = false;
-	bool m_bHasMetrics = false;
 	string m_svUID;
 	string m_svPersonaName;
 	string m_svInputDevice = "unknown";
-	MatchMetrics m_Metrics = {};
 };
 
 struct MatchReport_t
@@ -260,32 +257,16 @@ static void SV_LogMatchReportSummary(const char* const pszStage, const MatchRepo
 	{
 		SV_MatchReportDebugLogEnabled(
 			bDebugEnabled,
-			"[{}] player uid={} name={} connected={} bot={} inputDevice={} kills={} damage={} shotsFired={} shotsHit={} weaponKills={} weaponStats={}",
+			"[{}] player uid={} name={} connected={} bot={} inputDevice={} weaponKills={} weaponStats={}",
 			pszStage ? pszStage : "match-report",
 			player.m_svUID,
 			player.m_svPersonaName,
 			player.m_bConnected ? 1 : 0,
 			player.m_bBot ? 1 : 0,
 			player.m_svInputDevice,
-			player.m_Metrics.kills,
-			player.m_Metrics.damage,
-			player.m_Metrics.shotsFired,
-			player.m_Metrics.shotsHit,
 			player.m_WeaponKills.size(),
 			player.m_WeaponStats.size());
 	}
-}
-
-static string SV_FixedCharArrayToString(const char* const pszString, const size_t nMaxLength)
-{
-	if (!pszString)
-		return "";
-
-	size_t nLength = 0;
-	while (nLength < nMaxLength && pszString[nLength] != '\0')
-		nLength++;
-
-	return string(pszString, nLength);
 }
 
 static void SV_AddJsonString(rapidjson::Value& object, const char* const pszName,
@@ -303,58 +284,6 @@ static void SV_AddJsonCString(rapidjson::Value& object, const char* const pszNam
 
 	object.AddMember(rapidjson::StringRef(pszName),
 		rapidjson::Value(pszValue, strlen(pszValue), allocator), allocator);
-}
-
-static void SV_AddMatchMetricsObject(rapidjson::Value& player, const MatchMetrics& metrics,
-	rapidjson::Document::AllocatorType& allocator)
-{
-	rapidjson::Value metricsObject(rapidjson::kObjectType);
-	const string svCharacterName = SV_FixedCharArrayToString(metrics.characterName, sizeof(metrics.characterName));
-	const string svRankedPeriodName = SV_FixedCharArrayToString(metrics.rankedPeriodName, sizeof(metrics.rankedPeriodName));
-	const float flAccuracy = metrics.shotsFired > 0 ? (static_cast<float>(metrics.shotsHit) / static_cast<float>(metrics.shotsFired)) : 0.0f;
-
-	metricsObject.AddMember("hotDropped", metrics.hotDropped, allocator);
-	metricsObject.AddMember("relinquished", metrics.relinquished, allocator);
-	metricsObject.AddMember("allPings", metrics.allPings, allocator);
-	metricsObject.AddMember("locationPings", metrics.locationPings, allocator);
-	metricsObject.AddMember("enemyPings", metrics.enemyPings, allocator);
-	metricsObject.AddMember("shotsFired", metrics.shotsFired, allocator);
-	metricsObject.AddMember("shotsHit", metrics.shotsHit, allocator);
-	metricsObject.AddMember("accuracy", flAccuracy, allocator);
-	metricsObject.AddMember("accuracyPercent", flAccuracy * 100.0f, allocator);
-	metricsObject.AddMember("level", metrics.level, allocator);
-	metricsObject.AddMember("matches", metrics.matches, allocator);
-	metricsObject.AddMember("wins", metrics.wins, allocator);
-	metricsObject.AddMember("winsWithFriends", metrics.winsWithFriends, allocator);
-	metricsObject.AddMember("timesJumpmaster", metrics.timesJumpmaster, allocator);
-	metricsObject.AddMember("winsAsJumpmaster", metrics.winsAsJumpmaster, allocator);
-	metricsObject.AddMember("damage", metrics.damage, allocator);
-	metricsObject.AddMember("damageTaken", metrics.damageTaken, allocator);
-	metricsObject.AddMember("kills", metrics.kills, allocator);
-	metricsObject.AddMember("teamworkKills", metrics.teamworkKills, allocator);
-	metricsObject.AddMember("timesRevivedAlly", metrics.timesRevivedAlly, allocator);
-	metricsObject.AddMember("characterPickOrder", metrics.characterPickOrder, allocator);
-	SV_AddJsonString(metricsObject, "characterName", svCharacterName, allocator);
-	SV_AddJsonString(metricsObject, "rankedPeriodName", svRankedPeriodName, allocator);
-	metricsObject.AddMember("rankedScore", metrics.rankedScore, allocator);
-
-	player.AddMember("metrics", metricsObject, allocator);
-}
-
-static void SV_AddTrackerCompatObject(rapidjson::Value& player, const MatchMetrics& metrics,
-	rapidjson::Document::AllocatorType& allocator)
-{
-	rapidjson::Value trackerObject(rapidjson::kObjectType);
-
-	trackerObject.AddMember("kills", metrics.kills, allocator);
-	trackerObject.AddMember("damage", metrics.damage, allocator);
-	trackerObject.AddMember("score", metrics.rankedScore, allocator);
-	trackerObject.AddMember("total_matches", metrics.matches, allocator);
-	trackerObject.AddMember("previous_kills", metrics.kills, allocator);
-	trackerObject.AddMember("previous_damage", metrics.damage, allocator);
-	trackerObject.AddMember("previous_score", metrics.rankedScore, allocator);
-
-	player.AddMember("tracker", trackerObject, allocator);
 }
 
 static void SV_AddWeaponKillsObject(rapidjson::Value& player, const vector<pair<string, int>>& weaponKills,
@@ -452,8 +381,6 @@ static void SV_BuildMatchReportRequest(const MatchReport_t& report, rapidjson::D
 		player.AddMember("bot", reportPlayer.m_bBot, allocator);
 		player.AddMember("eliminated", reportPlayer.m_nLifeState != 0, allocator);
 
-		SV_AddMatchMetricsObject(player, reportPlayer.m_Metrics, allocator);
-		SV_AddTrackerCompatObject(player, reportPlayer.m_Metrics, allocator);
 		SV_AddWeaponKillsObject(player, reportPlayer.m_WeaponKills, allocator);
 		SV_AddWeaponStatsObject(player, reportPlayer.m_WeaponStats, allocator);
 
@@ -729,9 +656,7 @@ static void SV_UpdateMatchReportPlayerSnapshot(CPlayer* const pPlayer)
 	snapshot.m_nNucleusID = nNucleusID;
 	snapshot.m_bConnected = pPlayer->IsConnected();
 	snapshot.m_bBot = pPlayer->IsBot();
-	snapshot.m_bHasMetrics = true;
 	snapshot.m_svUID = Format("%llu", nNucleusID);
-	snapshot.m_Metrics = pPlayer->GetMatchMetrics();
 	snapshot.m_svInputDevice = SV_GetMatchReportInputDeviceName(pPlayer);
 
 	const string svPlayerName = SV_GetMatchReportPlayerName(pPlayer);
@@ -768,8 +693,6 @@ static void SV_CopyMatchReportPlayerSnapshot(const NucleusID_t nNucleusID, Match
 		outPlayer.m_svUID = snapshot.m_svUID.empty() ? outPlayer.m_svUID : snapshot.m_svUID;
 		outPlayer.m_svPersonaName = snapshot.m_svPersonaName;
 		outPlayer.m_svInputDevice = snapshot.m_svInputDevice.empty() ? "unknown" : snapshot.m_svInputDevice;
-		if (snapshot.m_bHasMetrics)
-			outPlayer.m_Metrics = snapshot.m_Metrics;
 	}
 }
 
