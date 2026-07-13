@@ -72,7 +72,10 @@ bool SV_SendRemoteApiJsonRequest(const RemoteApiRequest_t& request,
 	params.writeFunction = CURLWriteStringCallback;
 	params.timeout = request.m_nTimeout;
 	params.verifyPeer = request.m_bVerifyPeer;
-	params.verbose = request.m_bVerbose;
+	// libcurl's raw verbose trace includes outgoing headers. Keep the
+	// higher-level, redacted diagnostics below, but never expose a bearer token
+	// through CURLOPT_VERBOSE.
+	params.verbose = request.m_bVerbose && request.m_svToken.empty();
 
 	curl_slist* sList = nullptr;
 	CURL* const curl = CURLInitRequest(request.m_svUrl.c_str(), stringBuffer.GetString(),

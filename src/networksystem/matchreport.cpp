@@ -8,7 +8,10 @@
 #include "core/logdef.h"
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <ctime>
+#include <limits>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -113,6 +116,7 @@ static std::atomic_bool s_bMatchReportInFlight(false);
 static int s_nLastReportedSpawnCount = -1;
 static string s_svLastReportedMap;
 static std::recursive_mutex s_MatchReportStatsMutex;
+static std::unique_ptr<MatchReport_t> s_PendingMatchReport;
 static std::unordered_map<NucleusID_t, MatchReportPlayerSnapshot_t> s_PlayerSnapshots;
 static std::unordered_map<NucleusID_t, std::unordered_map<string, int>> s_PlayerWeaponKills;
 static std::unordered_map<NucleusID_t, std::unordered_map<string, MatchReportWeaponStat_t>> s_PlayerWeaponStats;
@@ -572,9 +576,17 @@ static NucleusID_t SV_ParseMatchReportNucleusID(const char* const pszUid)
 	if (!VALID_CHARSTAR(pszUid))
 		return 0;
 
+	for (const unsigned char* p = reinterpret_cast<const unsigned char*>(pszUid); *p; ++p)
+	{
+		if (*p < '0' || *p > '9')
+			return 0;
+	}
+
 	char* pEnd = nullptr;
+	errno = 0;
 	const uint64_t nUid = strtoull(pszUid, &pEnd, 10);
-	if (pEnd == pszUid)
+	if (pEnd == pszUid || *pEnd != '\0' || errno == ERANGE || nUid == 0 ||
+		nUid > static_cast<uint64_t>((std::numeric_limits<NucleusID_t>::max)()))
 		return 0;
 
 	return static_cast<NucleusID_t>(nUid);
@@ -908,6 +920,18 @@ static void SV_SubmitMatchReport(RemoteApiRequest_t request, MatchReport_t repor
 		return;
 	}
 
+	{
+		std::lock_guard<std::recursive_mutex> lock(s_MatchReportStatsMutex);
+		if (s_PendingMatchReport &&
+			s_PendingMatchReport->m_nSpawnCount == report.m_nSpawnCount &&
+			s_PendingMatchReport->m_svMap == report.m_svMap)
+		{
+			s_nLastReportedSpawnCount = report.m_nSpawnCount;
+			s_svLastReportedMap = report.m_svMap;
+			s_PendingMatchReport.reset();
+		}
+	}
+
 	size_t nWeaponStatRows = 0;
 	for (const MatchReportPlayer_t& player : report.m_Players)
 		nWeaponStatRows += player.m_WeaponStats.size();
@@ -923,6 +947,8 @@ void SV_ReportMatchEndData(CServer* const pServer)
 {
 	if (!sv_match_report_enable.GetBool())
 	{
+		std::lock_guard<std::recursive_mutex> lock(s_MatchReportStatsMutex);
+		s_PendingMatchReport.reset();
 		SV_ClearMatchReportScriptStats();
 		return;
 	}
@@ -954,19 +980,29 @@ void SV_ReportMatchEndData(CServer* const pServer)
 	std::lock_guard<std::recursive_mutex> lock(s_MatchReportStatsMutex);
 
 	MatchReport_t report;
-	if (!SV_BuildMatchReport(pServer, report))
-		return;
-	SV_LogMatchReportSummary("built", report, request.m_bVerbose);
-
-	if (s_nLastReportedSpawnCount == report.m_nSpawnCount && s_svLastReportedMap == report.m_svMap)
+	if (s_PendingMatchReport)
 	{
-		SV_MatchReportDebugLogEnabled(request.m_bVerbose, "[built] skipped duplicate spawn/map spawn={} map={}", report.m_nSpawnCount, report.m_svMap);
-		return;
+		report = *s_PendingMatchReport;
+		SV_MatchReportDebugLogEnabled(request.m_bVerbose,
+			"[built] retrying pending spawn/map spawn={} map={}",
+			report.m_nSpawnCount, report.m_svMap);
+	}
+	else
+	{
+		if (!SV_BuildMatchReport(pServer, report))
+			return;
+		SV_LogMatchReportSummary("built", report, request.m_bVerbose);
+
+		if (s_nLastReportedSpawnCount == report.m_nSpawnCount && s_svLastReportedMap == report.m_svMap)
+		{
+			SV_MatchReportDebugLogEnabled(request.m_bVerbose, "[built] skipped duplicate spawn/map spawn={} map={}", report.m_nSpawnCount, report.m_svMap);
+			return;
+		}
+
+		s_PendingMatchReport = std::make_unique<MatchReport_t>(report);
+		SV_ClearMatchReportScriptStats();
 	}
 
-	s_nLastReportedSpawnCount = report.m_nSpawnCount;
-	s_svLastReportedMap = report.m_svMap;
-	SV_ClearMatchReportScriptStats();
 	s_bMatchReportInFlight.store(true);
 
 	if (!SV_StartRemoteApiWorker("match-report",
