@@ -1,5 +1,10 @@
 # Repository Guidelines
 
+## Related Repositories
+
+- Backend: `D:\Project\r5\r5-server-bot`
+- Frontend: `D:\Project\r5\r5-server-panel`
+
 ## Project Structure & Module Organization
 
 This is a Windows-focused C++17 SDK built with CMake and Visual Studio. Primary source lives in `src/`, with each subsystem in its own module directory and usually its own `CMakeLists.txt` (for example `src/engine`, `src/networksystem`, `src/sdklauncher`, `src/game`). Public headers are under `src/public`, build macros are in `src/cmake`, bundled dependencies are in `src/thirdparty`, and runtime resources are in `src/resource`. Build output and local game files go to `game/`; intermediates go to `build_intermediate/`; libraries go to `lib/`; logs go to `log/`. Treat these generated/local directories as non-source.
