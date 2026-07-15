@@ -127,11 +127,5 @@ void SV_DisconnectClientNow(CClient* const pClient, const char* const pszReason)
 		}
 	}
 
-	if (pClient->IsActive())
-	{
-		pClient->Disconnect(Reputation_t::REP_MARK_BAD, "%s", pszSafeReason);
-		return;
-	}
-
 	NET_RemoveChannel(pClient, pClient->GetUserID(), pszSafeReason, 1, true);
 }
