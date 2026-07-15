@@ -9,6 +9,7 @@
 //
 /////////////////////////////////////////////////////////////////////////////////
 #include "core/stdafx.h"
+#include "core/logger.h"
 #include "common/protocol.h"
 #include "tier0/frametask.h"
 #include "tier1/cvar.h"
@@ -36,6 +37,40 @@ ConVar sv_banlistRefreshRate("sv_banlistRefreshRate", "30.0", FCVAR_DEVELOPMENTO
 static ConVar sv_validatePersonaName("sv_validatePersonaName", "1", FCVAR_RELEASE, "Validate the client's textual persona name on connect.");
 static ConVar sv_minPersonaNameLength("sv_minPersonaNameLength", "4", FCVAR_RELEASE, "The minimum length of the client's textual persona name.", true, 0.f, false, 0.f);
 static ConVar sv_maxPersonaNameLength("sv_maxPersonaNameLength", "16", FCVAR_RELEASE, "The maximum length of the client's textual persona name.", true, 0.f, false, 0.f);
+
+static void SV_WriteConnectRuntimeBreadcrumb(const char* const pszSource,
+	const user_creds_s* const pChallenge, const CClient* const pClient = nullptr)
+{
+	char szAddress[128] = "";
+	NucleusID_t nNucleusID = 0;
+	int nPort = 0;
+	const char* pszPersonaName = "";
+
+	if (pChallenge)
+	{
+		pChallenge->netAdr.ToString(szAddress, sizeof(szAddress), true);
+		nNucleusID = pChallenge->personaId;
+		nPort = int(ntohs(pChallenge->netAdr.GetPort()));
+		pszPersonaName = VALID_CHARSTAR(pChallenge->personaName) ? pChallenge->personaName : "";
+	}
+
+	char szDetail[768];
+	if (pClient)
+	{
+		V_snprintf(szDetail, sizeof(szDetail),
+			"challenge='%s:%d' persona='%s' persona_nucleus=%llu client_user=%d client_handle=%d client_nucleus=%llu signon=%d",
+			szAddress, nPort, pszPersonaName, nNucleusID, pClient->GetUserID(),
+			static_cast<int>(pClient->GetHandle()), pClient->GetNucleusID(),
+			static_cast<int>(pClient->GetSignonState()));
+	}
+	else
+	{
+		V_snprintf(szDetail, sizeof(szDetail), "challenge='%s:%d' persona='%s' persona_nucleus=%llu client=null",
+			szAddress, nPort, pszPersonaName, nNucleusID);
+	}
+
+	SDK_WriteRuntimeBreadcrumb(pszSource, szDetail);
+}
 
 //---------------------------------------------------------------------------------
 // Purpose: Gets the number of human players on the server
@@ -176,7 +211,10 @@ CClient* CServer::ConnectClient(CServer* pServer, user_creds_s* pChallenge)
 		return nullptr;
 	}
 
+	SV_WriteConnectRuntimeBreadcrumb("server_connect_challenge", pChallenge);
+
 	CClient* const pClient = CServer__ConnectClient(pServer, pChallenge);
+	SV_WriteConnectRuntimeBreadcrumb("server_connect_return", pChallenge, pClient);
 	if (!pClient)
 		return nullptr;
 

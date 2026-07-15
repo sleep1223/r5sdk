@@ -46,7 +46,7 @@ Match nearby code first. The project uses C++17, MSVC `/permissive-`, `/W4`, and
 
 ## Testing Guidelines
 
-There is no project-owned automated test harness in the main tree; search hits are vendored third-party tests. Validate changes by building the touched target in Debug or Release, then manually exercise the affected launcher, server, networking, script, or game path. For new utility code, prefer small isolated tests or diagnostics wired through CMake.
+There is no project-owned automated test harness in the main tree; search hits are vendored third-party tests. Do not run build or compile commands for verification; perform static code checks only, such as targeted source review, `rg` searches, and `git diff --check`. If runtime validation is needed, report the recommended manual scenario for the user to run.
 
 ## Version & Build Reporting
 

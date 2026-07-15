@@ -9,6 +9,7 @@
 //
 ///////////////////////////////////////////////////////////////////////////////////
 #include "core/stdafx.h"
+#include "core/logger.h"
 #include "mathlib/bitvec.h"
 #include "tier1/cvar.h"
 #include "tier1/strtools.h"
@@ -28,12 +29,45 @@
 // Absolute max string cmd length, any character past this will be NULLED.
 #define STRINGCMD_MAX_LEN 512
 
+#ifndef CLIENT_DLL
+static void SV_WriteClientRuntimeBreadcrumb(const char* const pszSource,
+	const CClient* const pClient, const CNetChan* const pChan = nullptr,
+	const char* const pszExtra = nullptr)
+{
+	const CNetChan* const pEffectiveChan = pChan ? pChan : (pClient ? pClient->GetNetChan() : nullptr);
+	const char* const pszName = pEffectiveChan ? pEffectiveChan->GetName() : "";
+	const char* const pszAddress = pEffectiveChan ? pEffectiveChan->GetAddress() : "";
+
+	char szDetail[768];
+	if (pClient)
+	{
+		V_snprintf(szDetail, sizeof(szDetail),
+			"user=%d handle=%d nucleus=%llu signon=%d connected=%d active=%d fake=%d chan='%s' addr='%s'%s%s",
+			pClient->GetUserID(), static_cast<int>(pClient->GetHandle()), pClient->GetNucleusID(),
+			static_cast<int>(pClient->GetSignonState()), pClient->IsConnected() ? 1 : 0,
+			pClient->IsActive() ? 1 : 0, pClient->IsFakeClient() ? 1 : 0,
+			pszName, pszAddress, VALID_CHARSTAR(pszExtra) ? " " : "",
+			VALID_CHARSTAR(pszExtra) ? pszExtra : "");
+	}
+	else
+	{
+		V_snprintf(szDetail, sizeof(szDetail), "client=null chan='%s' addr='%s'%s%s",
+			pszName, pszAddress, VALID_CHARSTAR(pszExtra) ? " " : "",
+			VALID_CHARSTAR(pszExtra) ? pszExtra : "");
+	}
+
+	SDK_WriteRuntimeBreadcrumb(pszSource, szDetail);
+}
+#endif // !CLIENT_DLL
+
 //---------------------------------------------------------------------------------
 // Purpose: throw away any residual garbage in the channel
 //---------------------------------------------------------------------------------
 void CClient::Clear(void)
 {
 #ifndef CLIENT_DLL
+	SV_WriteClientRuntimeBreadcrumb("client_clear_enter", this);
+
 	if (CClientExtended* const pExtended = GetClientExtended())
 	{
 		pExtended->Reset(); // Reset extended data.
@@ -60,6 +94,14 @@ void CClient::Clear(void)
 //---------------------------------------------------------------------------------
 void CClient::VClear(CClient* pClient)
 {
+#ifndef CLIENT_DLL
+	if (!pClient)
+	{
+		SV_WriteClientRuntimeBreadcrumb("client_clear_null", nullptr);
+		return;
+	}
+#endif // !CLIENT_DLL
+
 	pClient->Clear();
 }
 
@@ -356,6 +398,16 @@ bool CClient::VConnect(CClient* pClient, const char* szName, CNetChan* pNetChan,
 //---------------------------------------------------------------------------------
 bool CClient::VConnectionStart(CClient* pClient, CNetChan* pChan)
 {
+#ifndef CLIENT_DLL
+	if (!pClient || !pChan)
+	{
+		SV_WriteClientRuntimeBreadcrumb("client_connection_start_invalid", pClient, pChan);
+		return false;
+	}
+
+	SV_WriteClientRuntimeBreadcrumb("client_connection_start", pClient, pChan);
+#endif // !CLIENT_DLL
+
 	pClient->RegisterNetMsgs(pChan);
 	return CClient__ConnectionStart(pClient, pChan);
 }
