@@ -543,7 +543,8 @@ void function MatchReportShStats_RecordWeaponHit( entity attacker, string weapon
 		MatchReportShStats_DebugNote( "ShStats_DamageDoneToPlayerForWeapon" )
 	}
 
-	MatchReportWeaponStats_RecordWeaponHit( attacker, weaponName, damageAmount, 1, 1.0, isHeadshot ? 1 : 0 )
+	// PIN selects the detailed tracker path or the generic TRACKER/STUB fallback.
+	PIN_DamageDoneToPlayerForWeapon( attacker, weaponName, damageAmount, isHeadshot )
 }
 
 void function MatchReportShStats_RecordPlayerKilled( entity victim, entity attacker, var damageInfo )
@@ -1532,6 +1533,7 @@ void function OnWeaponAttack( entity player, entity weapon, string weaponName, i
 	Assert( player.IsPlayer() )
 	Assert( IsValid( weapon ) )
 
+	// This is the single match-report shot owner for TRACKER and STUB builds.
 	MatchReportShStats_RecordWeaponShot( player, weapon, weaponName, ammoUsed )
 
 	if ( !ShouldGatherStats( player ) )
@@ -1595,8 +1597,6 @@ void function StatsHook_OnPlayerOrNPCTookDamage( entity attacker, entity victim,
 			string ornull weaponClassNameOrNull = GetWeaponClassNameFromDamageInfo( damageInfo )
 			if ( weaponClassNameOrNull != null )
 			{
-				PIN_DamageDoneToPlayerForWeapon( attacker, expect string( weaponClassNameOrNull ), float(damageAmount), isHeadshot )
-
 				ItemFlavor ornull weaponFlavorOrNull = GetWeaponItemFlavorByClass( expect string(weaponClassNameOrNull) )
 				if ( weaponFlavorOrNull != null )
 				{

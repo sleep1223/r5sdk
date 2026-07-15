@@ -83,7 +83,6 @@ global function bEnc
 bool matchReportPinTelemetryInitLogged = false
 bool matchReportPinTelemetryKillLogged = false
 bool matchReportPinTelemetryDamageLogged = false
-bool matchReportPinTelemetryAttackLogged = false
 
 #if STUB
 
@@ -3441,7 +3440,8 @@ void function Tracker_HandleDamage( DamageEvent event, entity attacker, int weap
 	if ( weaponName == "" )
 		weaponName = string( weaponSource )
 
-	if ( MatchReportWeaponStats_IsInitialized() )
+	// sh_stats records the generic fallback when tracker is disabled at runtime.
+	if ( file.bTrackerEnabled && MatchReportWeaponStats_IsInitialized() )
 		MatchReportWeaponStats_RecordWeaponHit( attacker, weaponName, damageAmount, hitsDelta, bulletsHitDelta, headshotsDelta )
 
 	//sqprint( format( "Tracker: Handling damage for an event with isNew: %s and existing damage: %.2f\n", event.isNew ? "true" : "false", event.damage ) )
@@ -4892,14 +4892,6 @@ bool function Tracker_ShouldRecordWeaponShot( string weaponRef )
 
 void function WeaponAttack( entity player, entity weapon, string weaponRef, int ammoUsed, vector origin, vector dir )
 {
-	if ( !matchReportPinTelemetryAttackLogged )
-	{
-		matchReportPinTelemetryAttackLogged = true
-		MatchReportWeaponStats_DebugNote( "WeaponAttack tracker" )
-	}
-	if ( MatchReportWeaponStats_IsInitialized() )
-		MatchReportWeaponStats_RecordWeaponAttack( player, weapon, weaponRef, ammoUsed, origin, dir )
-
 	if( weaponRef in TrackerWepTable() )
 	{
 		RecordPlayerShot( player, TrackerWepTable()[ weaponRef ] )
@@ -5525,14 +5517,6 @@ void function PIN_AddToPlayerCountStat( entity player, string ability )
 
 void function PIN_OnWeaponAttack( entity player, entity meleeAttackWeapon, string classname, int num, vector origin, vector lookDirection )
 {
-	if ( !matchReportPinTelemetryAttackLogged )
-	{
-		matchReportPinTelemetryAttackLogged = true
-		MatchReportWeaponStats_DebugNote( "PIN_OnWeaponAttack tracker" )
-	}
-	if ( !file.bTrackerEnabled && MatchReportWeaponStats_IsInitialized() )
-		MatchReportWeaponStats_RecordWeaponAttack( player, meleeAttackWeapon, classname, num, origin, lookDirection )
-
 	/* no need, handled by ondamage
 	string pname = player.GetPlayerName( )
 	string message = format("%s meleed: ", pname )
@@ -6009,13 +5993,6 @@ void function PIN_PlayerAbilityReady( entity player, int ability ){}
 void function PIN_AddToPlayerCountStat( entity player, string ability ){}
 void function PIN_OnWeaponAttack( entity player, entity meleeAttackWeapon, string classname, int num, vector origin, vector lookDirection )
 {
-	if ( !matchReportPinTelemetryAttackLogged )
-	{
-		matchReportPinTelemetryAttackLogged = true
-		MatchReportWeaponStats_DebugNote( "PIN_OnWeaponAttack stub" )
-	}
-	if ( MatchReportWeaponStats_IsInitialized() )
-		MatchReportWeaponStats_RecordWeaponAttack( player, meleeAttackWeapon, classname, num, origin, lookDirection )
 }
 void function PIN_Ping( entity player, string pingType, entity pingEnt, vector position ){}
 void function PIN_OnPlayerHealed( entity player, ... ){}
