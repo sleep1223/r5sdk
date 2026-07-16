@@ -3932,14 +3932,30 @@ int function GetPlayerMetricsIndex( entity player )
 		return -1
 
     if ( uid in file.PlayerIdMap )
-        return file.PlayerIdMap[ uid ]
+	{
+		int index = file.PlayerIdMap[ uid ]
+		if( index >= 0 && index < file.PlayerMetricsArray.len() )
+			return index
+
+		delete file.PlayerIdMap[ uid ]
+	}
 
 	return InitializePlayerMetricsStructForPlayer( player )
 }
 
 bool function Tracker_IsPlayerMetricsInitialized( string uid )
 {
-	return ( uid in file.PlayerIdMap )
+	if( uid == "" || !( uid in file.PlayerIdMap ) )
+		return false
+
+	int index = file.PlayerIdMap[ uid ]
+	if( index >= 0 && index < file.PlayerMetricsArray.len() )
+		return true
+
+	// PlayerMetricsArray is rebuilt between rounds. Never let a stale map entry
+	// escape into callers while the two containers are being reset.
+	delete file.PlayerIdMap[ uid ]
+	return false
 }
 
 int function GetPlayerMetricsIndexByUID( string uid )
@@ -3948,7 +3964,13 @@ int function GetPlayerMetricsIndexByUID( string uid )
 		return -1
 
 	if ( uid in file.PlayerIdMap )
-        return file.PlayerIdMap[ uid ]
+	{
+		int index = file.PlayerIdMap[ uid ]
+		if( index >= 0 && index < file.PlayerMetricsArray.len() )
+			return index
+
+		delete file.PlayerIdMap[ uid ]
+	}
 
     return InitializePlayerMetricsStructForPlayerByUID( uid )
 }
@@ -3982,10 +4004,12 @@ PlayerMetrics function __GetPlayerMetrics( int id )
 
 int function PlayerMap_Insert( string uid )
 {
-	if( uid == "" )
+	if( uid == "" || file.PlayerMetricsArray.len() == 0 )
 		return -1
 
     int index = file.PlayerMetricsArray.len() - 1
+	if( !IsValidPlayerMetricsIndex( index ) )
+		return -1
 
 	file.PlayerIdMap[ uid ] <- index
 	return index
