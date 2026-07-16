@@ -23,6 +23,7 @@
 #include "networksystem/matchreport.h"
 #include "pluginsystem/pluginsystem.h"
 #include "game/server/recipientfilter.h"
+#include "game/server/logger_websocket.h"
 
 static ConVar sv_disable_enemy_spotted_ping("sv_disable_enemy_spotted_ping", "1", FCVAR_RELEASE,
 	"Drops enemy-spotted ping usercmds before script validation.");
@@ -153,7 +154,7 @@ void CServerGameDLL::OnReceivedSayTextMessage(CServerGameDLL* thisptr, int sende
 	CClientExtended* const pSenderExtended = pSenderClient->GetClientExtended();
 	if (!pSenderExtended)
 		return;
-	
+
 	const bool bSenderIsCommsBanned = pSenderExtended->IsClientCommsBanned();
 
 	if (bShouldApplyGlobalCommsMutes && bSenderIsCommsBanned)
@@ -191,6 +192,9 @@ void CServerGameDLL::OnReceivedSayTextMessage(CServerGameDLL* thisptr, int sende
 			return;
 		}
 	}
+
+	if (tracker_ws_relay_chat.GetBool() && pSenderClient->IsHumanPlayer())
+		TrackerSocketSystem()->RelayChatMessage(pSenderPlayer->GetPlatformUserId(), pSenderPlayer->GetNetName(), text);
 
 	const bool bSenderDeadAndCanOnlyTalkToDead = hudchat_dead_can_only_talk_to_other_dead->GetBool() && pSenderPlayer->GetLifeState();
 
@@ -413,6 +417,7 @@ static void ExecuteFrameServerJob(double flFrameTime, bool bRunOverlays, bool bU
 	v_ExecuteFrameServerJob(flFrameTime, bRunOverlays, bUpdateFrame);
 
 	LiveAPISystem()->RunFrame();
+	TrackerSocketSystem()->RunFrame();
 	DrawAllDebugOverlays();
 }
 

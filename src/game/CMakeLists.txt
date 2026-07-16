@@ -173,6 +173,10 @@ add_sources( SOURCE_GROUP "Weapon"
 add_sources( SOURCE_GROUP "Script"
     "server/vscript_server.cpp"
     "server/vscript_server.h"
+    "server/logger.cpp"
+    "server/logger.h"
+    "server/logger_websocket.cpp"
+    "server/logger_websocket.h"
 )
 
 add_sources( SOURCE_GROUP "Physics"

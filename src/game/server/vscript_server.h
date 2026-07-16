@@ -1,5 +1,9 @@
 #ifndef VSCRIPT_SERVER_H
 #define VSCRIPT_SERVER_H
+#include <array>
+#include <tuple>
+#include <type_traits>
+#include <utility>
 #include "vscript/languages/squirrel_re/vsquirrel.h"
 #include "game/server/anim_recording.h"
 
@@ -8,7 +12,8 @@ void Script_RegisterCoreServerFunctions(CSquirrelVM* s);
 void Script_RegisterAdminServerFunctions(CSquirrelVM* s);
 
 void Script_RegisterServerEnums(CSquirrelVM* const s);
-
+int64_t getMatchID();
+void setMatchID(int64_t newID);
 #define DEFINE_SERVER_SCRIPTFUNC_NAMED(s, functionName, helpString, returnType, parameters, isVariadic, ...) \
 	Script_RegisterFuncNamed(s, MKSTRING(functionName), MKSTRING(Server_Script_##functionName),  \
 	helpString, returnType, parameters, isVariadic, ServerScript_##functionName, __VA_ARGS__)        \
@@ -38,6 +43,97 @@ inline ScriptClassDescriptor_t* g_serverScriptTitanSoulStruct;
 inline ScriptClassDescriptor_t* g_serverScriptPlayerDecoyStruct;
 inline ScriptClassDescriptor_t* g_serverScriptSpawnpointStruct;
 inline ScriptClassDescriptor_t* g_serverScriptFirstPersonProxyStruct;
+
+//------------------------------------------------------------------------------
+// Purpose: Converts arguments into ScriptVariant_t objects. By default, it copies
+// C-style strings (const char* or char*), unless wrapped with MakeNoCopyStr().
+// For other types, it simply forwards. Includes overloads for char* variants.
+//------------------------------------------------------------------------------
+struct NoCopyStr
+{
+	const char* const str;
+	NoCopyStr(const char* s) : str(s) {}
+};
+
+inline static NoCopyStr MakeNoCopyStr(const char* s)
+{
+	return NoCopyStr(s);
+}
+
+template < typename T,
+	typename std::enable_if<!std::is_same<std::decay_t<T>, NoCopyStr>::value, int>::type = 0 >
+
+inline ScriptVariant_t MakeVariant(T&& arg)
+{
+	return ScriptVariant_t(std::forward<T>(arg));
+}
+
+inline static ScriptVariant_t MakeVariant(const char* arg)
+{
+	return ScriptVariant_t(arg, true);
+}
+
+inline static ScriptVariant_t MakeVariant(char* arg)
+{
+	return ScriptVariant_t(arg, true);
+}
+
+inline static ScriptVariant_t MakeVariant(const NoCopyStr& arg)
+{
+	return ScriptVariant_t(arg.str, false);
+}
+
+//------------------------------------------------------------------------------
+// Purpose: Helper function that unpacks the tuple. The last tuple element is the
+// function signature, while the rest are the script arguments.
+//------------------------------------------------------------------------------
+template < typename Tuple, size_t ...I >
+inline bool CallServerScriptFunction_Impl(const char* functionName, Tuple& tup, std::index_sequence< I... >)
+{
+	constexpr size_t N = std::tuple_size< std::decay_t< Tuple > >::value;
+	constexpr size_t argCount = N - 1;
+	const char* functionSignature = std::get< N - 1 >(tup);
+
+	if (!g_pServerScript || !functionName || !functionSignature)
+		return false;
+
+	std::array< ScriptVariant_t, argCount > scriptArgs = { MakeVariant(std::get< I >(tup)) ... };
+
+	HSCRIPT hFunc = g_pServerScript->FindFunction(functionName, functionSignature, nullptr);
+	if (!hFunc)
+	{
+		v_SQVM_ScriptError("Function %s not found.\n", functionName);
+		return false;
+	}
+
+	ScriptStatus_t status = g_pServerScript->ExecuteFunction
+	(
+		hFunc,
+		scriptArgs.data(),
+		argCount,
+		nullptr,
+		nullptr
+	);
+
+	free(hFunc);
+	return (status == SCRIPT_DONE);
+}
+
+//------------------------------------------------------------------------------
+// Purpose: Main function that creates the tuple and calls the helper.
+//------------------------------------------------------------------------------
+template < typename ... Args >
+inline bool CallServerScriptFunction(const char* functionName, Args&&... args)
+{
+	constexpr size_t totalArgs = sizeof...(Args);
+	static_assert(totalArgs >= 1, "Must supply at least the function signature as the last parameter");
+
+	auto tup = std::make_tuple(std::forward< Args >(args)...);
+
+	return CallServerScriptFunction_Impl(functionName, tup, std::make_index_sequence< totalArgs - 1 >{});
+}
+
+#define CALL_SERVER_SCRIPT_FUNC( funcName, ... ) CallServerScriptFunction( funcName, __VA_ARGS__ )
 
 ///////////////////////////////////////////////////////////////////////////////
 class VScriptServer : public IDetour
@@ -124,9 +220,8 @@ class VScriptServer : public IDetour
 		CMemory(v_Script_RegisterServerSpawnpointClassFuncs).Offset(0x50).FindPatternSelf("48 8D 15", CMemory::Direction::DOWN, 150).ResolveRelativeAddressSelf(0x3, 0x7).GetPtr(g_serverScriptSpawnpointStruct);
 		CMemory(v_Script_RegisterServerFirstPersonProxyClassFuncs).Offset(0x50).FindPatternSelf("48 8D 15", CMemory::Direction::DOWN, 150).ResolveRelativeAddressSelf(0x3, 0x7).GetPtr(g_serverScriptFirstPersonProxyStruct);
 	}
-	virtual void GetCon(void) const { }
+	virtual void GetCon(void) const {}
 	virtual void Detour(const bool bAttach) const;
 };
 ///////////////////////////////////////////////////////////////////////////////
-
 #endif // VSCRIPT_SERVER_H

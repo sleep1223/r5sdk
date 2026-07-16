@@ -253,6 +253,35 @@ SQBool sq_release(HSQUIRRELVM v, SQObject* po)
 	return _ss(v)->_refs_table.Release(*po);
 }
 
+//---------------------------------------------------------------------------------
+SQObjectType sq_gettype(HSQUIRRELVM v, SQInteger idx)
+{
+	return sq_type(stack_get(v, idx));
+}
+
+//---------------------------------------------------------------------------------
+SQRESULT sq_getarraysize(HSQUIRRELVM v, SQInteger idx, SQInteger* outSize)
+{
+	if (!outSize)
+		return SQ_ERROR;
+
+	SQObject obj = stack_get(v, idx);
+	if (sq_type(obj) != OT_ARRAY)
+		return SQ_ERROR;
+	SQArray* arr = _array(obj);
+	*outSize = (SQInteger)arr->Size();
+	return SQ_OK;
+}
+
+SQInteger sq_absindex(HSQUIRRELVM v, SQInteger idx)
+{
+	if (idx >= 0)
+		return idx;
+
+	SQInteger absIdx = sq_gettop(v) + idx + 1;
+	return ( absIdx > 0 ) ? absIdx : 0;
+}
+
 void VSquirrelAPI::Detour(const bool bAttach) const
 {
 	DetourSetup(&v_sq_pushroottable, &sq_pushroottable, bAttach);

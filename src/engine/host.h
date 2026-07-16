@@ -27,6 +27,7 @@ inline float* host_frametime_stddeviation = nullptr;
 
 void Host_Error(const char* const error, ...);
 void Host_ReparseAllScripts();
+void Host_Reload();
 
 class CCommonHostState
 {

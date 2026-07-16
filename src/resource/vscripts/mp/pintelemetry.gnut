@@ -5831,10 +5831,10 @@ bool function IsClientCommandAdminEnabled()
 #else
 		string function TrackerGetSetting__internal( string key ){ return "" }
 		void function TrackerReloadConfig__internal(){}
-		void function InitializeTrackerLogThread__internal(){}
+		void function InitializeTrackerLogThread__internal( bool encrypt ){}
 		void function TrackerLogEvent__internal( string data, bool encrypt ){}
 		string function TrackerMatchID__internal(){ return "" }
-		void function TrackerStopLogging__internal(){}
+		void function TrackerStopLogging__internal( bool ship ){}
 		bool function TrackerIsLogging__internal(){ return false }
 		bool function TrackerGetLogState__internal( int state ){ return false }
 		void function TrackerCleanupLogs__internal(){}
@@ -5843,11 +5843,12 @@ bool function IsClientCommandAdminEnabled()
 		void function FetchBatchPersistenceData__internal( array<string> uids, array<string> requestedStats, array<string> requestedSettings ){}
 		void function FetchPlayerPersistenceData__internal( string UID, array<string> requestedStats, array<string> requestedSettings ){}
 		table function GetPlayerPersistenceData__internal( string uid ){ return {} }
-		void function TrackerResetStats__internal(){}
-		void function TrackerUpdateLiveStats__internal(){}
-		void function TrackerUpdatePlayerCount__internal(){}
-		void function TrackerEndMatchUpdate__internal(){}
-		void function TrackerEAVerify__internal(){}
+		void function TrackerResetStats__internal( string uid ){}
+		void function TrackerUpdateLiveStats__internal( string data ){}
+		void function TrackerUpdatePlayerCount__internal( string state, string name, string uid, string count ){}
+		void function TrackerEndMatchUpdate__internal( string recap ){}
+		void function TrackerEAVerify__internal( string token, string uid, string eaAccount ){}
+		void function TrackerRestartWebsocket__internal(){}
 
 		array<int> function TrackerCreateServerBot__internal(){ return [-1] }
 		void function TrackerServerMsg__internal( string msg, int id ){}

@@ -58,6 +58,9 @@ public:
 			timeOut = -1;
 			keepAlive = -1;
 			laxSSL = 0;
+
+			protocol = 0;
+			useTls = false;
 		}
 
 		// Total amount of buffer size that could be queued up and sent
@@ -81,6 +84,12 @@ public:
 		// Whether to validate the clients certificate, if this is set, no
 		// validation is performed
 		int32_t laxSSL;
+
+		// Protocol to use for SSL connections, if NULL the default is used
+		int32_t protocol;
+
+		// Enable tls required systems.
+		bool useTls;
 	};
 
 	//-------------------------------------------------------------------------
@@ -101,6 +110,7 @@ public:
 
 		bool Connect(const double queryTime, const ConnParams_s& params);
 		bool Process(const double queryTime);
+		const char* GetStateString(const ConnState_e contextState) const;
 
 		void SetParams(const ConnParams_s& params) const;
 
@@ -119,6 +129,7 @@ public:
 
 	CWebSocket();
 
+	static int32_t SetCaCert(uint8_t* pBuf, int32_t nRead);
 	bool Init(const char* const addressList, const ConnParams_s& params, const char*& initError);
 	void Shutdown();
 
@@ -128,12 +139,20 @@ public:
 	void Update();
 	void DeleteUnavailable();
 
+	bool Disconnect(const char* address);
 	void DisconnectAll();
 	void ReconnectAll();
 	void ClearAll();
 
 	void SendData(const char* const dataBuf, const int32_t dataSize);
 	bool IsInitialized() const;
+
+	int32_t ReceiveData(char* outBuf, int32_t bufSize);
+	bool IsListening(const char* address) const;
+	bool IsConnected(const char* address) const;
+	bool IsActive(const char* address) const;
+	ConnState_e GetState(const char* address) const;
+	const char* GetStateString(const ConnState_e state) const;
 
 private:
 	bool m_initialized;

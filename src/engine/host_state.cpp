@@ -57,6 +57,7 @@
 #include "public/edict.h"
 #ifndef CLIENT_DLL
 #include "game/server/gameinterface.h"
+#include "game/server/logger.h"
 #endif // !CLIENT_DLL
 #include "game/shared/vscript_shared.h"
 
@@ -284,11 +285,21 @@ void CHostState::FrameUpdate(CHostState* pHostState, double flCurrentTime, float
 			}
 			case HostStates_t::HS_CHANGE_LEVEL_SP:
 			{
+#ifndef CLIENT_DLL
+				if (g_pTracker && g_pTracker->IsLogging())
+					g_pTracker->StopLoggingThread();
+#endif // !CLIENT_DLL
+
 				g_pHostState->State_ChangeLevelSP();
 				break;
 			}
 			case HostStates_t::HS_CHANGE_LEVEL_MP:
 			{
+#ifndef CLIENT_DLL
+				if (g_pTracker && g_pTracker->IsLogging())
+					g_pTracker->StopLoggingThread();
+#endif // !CLIENT_DLL
+
 				g_pHostState->State_ChangeLevelMP();
 				break;
 			}
@@ -312,6 +323,10 @@ void CHostState::FrameUpdate(CHostState* pHostState, double flCurrentTime, float
 			}
 			case HostStates_t::HS_GAME_SHUTDOWN:
 			{
+#ifndef CLIENT_DLL
+				if (g_pTracker && g_pTracker->IsLogging())
+					g_pTracker->StopLoggingThread();
+#endif // !CLIENT_DLL
 				Msg(eDLL_T::ENGINE, "%s: Shutdown host game\n", __FUNCTION__);
 				CHostState__State_GameShutDown(g_pHostState);
 				break;
@@ -405,6 +420,7 @@ void CHostState::Setup(void)
 
 #ifndef CLIENT_DLL
 	LiveAPISystem()->Init();
+	TrackerInit();
 #endif // !CLIENT_DLL
 
 	if (CommandLine()->CheckParm("-norandomkey"))

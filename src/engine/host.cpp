@@ -160,6 +160,14 @@ void Host_ReparseAllScripts()
 	Cbuf_Execute();
 }
 
+void Host_Reload()
+{
+#ifndef CLIENT_DLL
+	if (g_pServer && g_pServer->IsActive())
+		Cbuf_AddText(Cbuf_GetCurrentPlayer(), "reload\n", cmd_source_t::kCommandSrcCode);
+#endif
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 void VHost::Detour(const bool bAttach) const
 {

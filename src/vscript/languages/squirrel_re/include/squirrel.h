@@ -245,6 +245,10 @@ SQRESULT sq_endconsttable(HSQUIRRELVM v);
 void sq_addref(HSQUIRRELVM v, SQObject* po);
 SQBool sq_release(HSQUIRRELVM v, SQObject* po);
 
+SQObjectType sq_gettype(HSQUIRRELVM v, SQInteger idx);
+SQRESULT sq_getarraysize(HSQUIRRELVM v, SQInteger idx, SQInteger* outSize);
+SQInteger sq_absindex(HSQUIRRELVM v, SQInteger idx);
+
 /*UTILITY MACRO*/
 #define sq_isnumeric(o) ((o)._type&SQOBJECT_NUMERIC)
 #define sq_istable(o) ((o)._type==OT_TABLE)
