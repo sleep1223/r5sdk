@@ -318,6 +318,7 @@ global struct PlayerMetrics
 {
     string playerID
 	string playername
+	entity ent // compatibility field used by Flowstate tracker scripts
 	int playerHandle
 
     array< float > JumpTimestamps //internal only
@@ -756,10 +757,13 @@ void function NULL_PDATA( entity player, string data ){}
 				if( !IsValid( metricPlayer ) )
 					return false
 
+				file.PlayerMetricsArray[ index ].ent = metricPlayer
 				file.PlayerMetricsArray[ index ].playerHandle = metricPlayer.GetEncodedEHandle()
 				return true
 			case "playerHandle":
-				file.PlayerMetricsArray[ index ].playerHandle = expect int( data )
+				int metricPlayerHandle = expect int( data )
+				file.PlayerMetricsArray[ index ].playerHandle = metricPlayerHandle
+				file.PlayerMetricsArray[ index ].ent = metricPlayerHandle >= 0 ? GetEntityFromEncodedEHandle( metricPlayerHandle ) : null
 				return true
 			case "kills":
 				file.PlayerMetricsArray[ index ].kills = expect int( data )
@@ -1575,7 +1579,10 @@ void function __DestroyStats()
 			continue
 
 		if( IsValidPlayerMetricsIndex( mID ) )
+		{
+			file.PlayerMetricsArray[ mID ].ent = player
 			file.PlayerMetricsArray[ mID ].playerHandle = player.GetEncodedEHandle()
+		}
 	}
 
 	foreach( callbackFunc in file.destroyStatCallbacks )
@@ -1827,7 +1834,10 @@ void function PlayerConnectedCallback( entity player )
 		return
 
 	if( IsValidPlayerMetricsIndex( mID ) )
+	{
+		file.PlayerMetricsArray[ mID ].ent = player
 		file.PlayerMetricsArray[ mID ].playerHandle = playerHandle
+	}
 
 	/////////////////////////////////////////////////////////////////////////////////////////
 	if( !file.bTrackerEnabled )
@@ -3890,6 +3900,7 @@ int function InitializePlayerMetricsStructForPlayer( entity player, string playe
 
 	NewMetrics.playerID = ID
 	NewMetrics.playername = name
+	NewMetrics.ent = player
 	NewMetrics.playerHandle = byID ? -1 : player.GetEncodedEHandle()
     NewMetrics.JumpTimestamps = []
     NewMetrics.WeaponShotsTimestamps = {}
