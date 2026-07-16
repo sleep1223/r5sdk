@@ -156,6 +156,7 @@ namespace TRACKER
         double m_lastUpdateTime;
         double m_lastConnectAttempt;
         float m_throttleRate;
+        bool m_forceLaxSSL;
 
         // Configuration caching
         std::string m_cachedApiKey;

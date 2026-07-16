@@ -48,6 +48,7 @@ namespace TRACKER
         , m_lastUpdateTime(0.0)
         , m_lastConnectAttempt(0.0)
         , m_throttleRate(0.10f)
+        , m_forceLaxSSL(false)
         , m_cachedApiKey()
         , m_cachedIdentifier()
         , m_configDirty(false)
@@ -104,6 +105,9 @@ namespace TRACKER
         if (!m_initialized.load())
         {
             m_webSocket = std::make_unique<CWebSocket>();
+
+            if (m_forceLaxSSL)
+                tracker_ws_lax_ssl.SetValue("1");
 
             bool useSSL = tracker_ws_use_ssl.GetBool();
 
@@ -2223,7 +2227,8 @@ namespace TRACKER
         Msg(eDLL_T::SERVER, "TrackerSocket: Installing CA Bundle file: %s\n", bundleFile);
         if (!InstallCaBundleFromPlatform(bundleFile))
         {
-            Warning(eDLL_T::SERVER, "TrackerSocket: CA bundle was not installed; strict TLS validation remains enabled.\n");
+            Warning(eDLL_T::SERVER, "TrackerSocket: CA bundle was not installed; tracker_ws_lax_ssl will be forced to 1 on connect.\n");
+            m_forceLaxSSL = true;
         }
     }
 
@@ -2296,7 +2301,7 @@ static void TrackerWs_OnConVarChanged(IConVar* var, const char* pOldValue, float
 //--------------------------------------------------------------------------
 // ConVars
 //--------------------------------------------------------------------------
-ConVar tracker_ws_enable("tracker_ws_enable", "0", FCVAR_RELEASE, "Enable WebSocket remote command interface (0 = disabled, 1 = enabled)", &TrackerWs_OnConVarChanged);
+ConVar tracker_ws_enable("tracker_ws_enable", "1", FCVAR_RELEASE, "Enable WebSocket remote command interface (0 = disabled, 1 = enabled)", &TrackerWs_OnConVarChanged);
 ConVar tracker_ws_port("tracker_ws_port", "9705", FCVAR_RELEASE, "WebSocket server port", &TrackerWs_OnConVarChanged);
 ConVar tracker_ws_debug("tracker_ws_debug", "0", FCVAR_RELEASE, "Enable WebSocket debug logging (0 = disabled, 1 = enabled)", &TrackerWs_OnConVarChanged);
 ConVar tracker_ws_use_ssl("tracker_ws_use_ssl", "1", FCVAR_RELEASE, "Use SSL for WebSocket connection (0 = disabled, 1 = enabled)", &TrackerWs_OnConVarChanged);
