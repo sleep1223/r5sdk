@@ -391,7 +391,7 @@ struct //Todo: move appropriate to tracker.var
 	array< string > requestedStatsArray
 	array< PlayerMetrics > PlayerMetricsArray
 	array< DamageEvent > allDamageEvents
-	table< int, DamageEvent > allDamageEventsMap
+	table< string, DamageEvent > allDamageEventsMap
 
 	bool _registerAllSettings
 	float maxWaitForBatchLoad
@@ -1559,6 +1559,7 @@ void function __DestroyStats()
 	file.bShouldShip = false
 	file.bStatsShipped = false
 
+	file.allDamageEventsMap = {}
 	file.allDamageEvents = []
 	file.PlayerMetricsArray = []
 	file.playerVerifyCounts = []
@@ -2601,7 +2602,7 @@ DamageEvent function Tracker_CreateDamageEvent( int weaponSource, float damage, 
     return event
 }
 
-void function Tracker_StoreDamageEvent( int identifier, DamageEvent event )
+void function Tracker_StoreDamageEvent( string identifier, DamageEvent event )
 {
 	if( identifier in file.allDamageEventsMap )
 		file.allDamageEventsMap[ identifier ] = event
@@ -2621,18 +2622,18 @@ void function RemoveDamageEvents( int attacker_handle, int victim_handle ) //Tod
 
 void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 {
-	array<int> idsToDelete = []
+	array<string> idsToDelete = []
 
-	foreach( int identifier, DamageEvent event in file.allDamageEventsMap )
+	foreach( string identifier, DamageEvent event in file.allDamageEventsMap )
 	{
 		if( event.attackerHandle == playerHandle || event.victimHandle == playerHandle )
 			idsToDelete.append( identifier )
 	}
 
-	foreach( int id in idsToDelete )
+	foreach( string identifier in idsToDelete )
 	{
-		if( id in file.allDamageEventsMap )
-			delete file.allDamageEventsMap[ id ]
+		if( identifier in file.allDamageEventsMap )
+			delete file.allDamageEventsMap[ identifier ]
 	}
 }
 
@@ -3247,15 +3248,7 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 			int removed = 0
 		#endif
 
-		DamageEvent nullevent
-		int killerOnVictimEventID = eventID( killer_attacker_handle, dead_victim_handle )
-		int victimOnKillerEventID = eventID( dead_victim_handle, killer_attacker_handle )
-
-		if( killerOnVictimEventID in file.allDamageEventsMap )
-			file.allDamageEventsMap[ killerOnVictimEventID ] = nullevent
-
-		if( victimOnKillerEventID in file.allDamageEventsMap )
-			file.allDamageEventsMap[ victimOnKillerEventID ] = nullevent
+		RemoveDamageEventsForPlayerHandle( dead_victim_handle )
 
 		for ( int i = file.allDamageEvents.len() - 1; i >= 0; --i )
 		{
@@ -3463,17 +3456,17 @@ const array<int> TRACKED_EVENT_DAMAGESOURCES =
 	eDamageSourceId.fall
 ]
 
-int function eventID( int attackerHandle, int victimHandle )
+string function Tracker_GetDamageEventKey( int attackerHandle, int victimHandle )
 {
-	return ( attackerHandle << 16 ) | victimHandle
+	return format( "%d:%d", attackerHandle, victimHandle )
 }
 
-DamageEvent function Tracker_GetRecentDamageEvent( int eventID )
+DamageEvent function Tracker_GetRecentDamageEvent( string eventKey )
 {
 	DamageEvent event
 
-	if( eventID in file.allDamageEventsMap )
-		return file.allDamageEventsMap[ eventID ]
+	if( eventKey in file.allDamageEventsMap )
+		return file.allDamageEventsMap[ eventKey ]
 
 	return event
 }
@@ -3513,7 +3506,7 @@ DamageEvent function Tracker_GetRecentDamageEvent( int eventID )
 	void function DEV_PrintDamageMap()
 	{
 		printt( "Tracker: DEV_PrintDamageEvent length:", file.allDamageEventsMap.len() )
-		foreach( int identifier, DamageEvent event in file.allDamageEventsMap )
+		foreach( string identifier, DamageEvent event in file.allDamageEventsMap )
 		{
 			printt( "Tracker: event identifier:", identifier )
 			DEV_PrintDamageEvent( event )
@@ -3615,15 +3608,15 @@ void function Tracker_OnPlayerDamaged( entity victim, var damageInfo )
     if ( IsSpecialWeapon( weaponSource ) )
         shotIdentifier = float( weaponSource ) + Time()
 
-	int damageEventID = eventID( attackerHandle, victimHandle )
+	string damageEventKey = Tracker_GetDamageEventKey( attackerHandle, victimHandle )
 
 	if( actionTimestamp - file.lastDamageBreadcrumbTime >= 1.0 )
 	{
 		file.lastDamageBreadcrumbTime = actionTimestamp
-		SDK_WriteRuntimeBreadcrumb( "tracker_damage", format( "victim=%d attacker=%d source=%d damage=%.1f event=%d map=%d arr=%d", victimHandle, attackerHandle, weaponSource, damageAmount, damageEventID, file.allDamageEventsMap.len(), file.allDamageEvents.len() ) )
+		SDK_WriteRuntimeBreadcrumb( "tracker_damage", format( "victim=%d attacker=%d source=%d damage=%.1f event=%s map=%d arr=%d", victimHandle, attackerHandle, weaponSource, damageAmount, damageEventKey, file.allDamageEventsMap.len(), file.allDamageEvents.len() ) )
 	}
 
-	DamageEvent existingEvent = Tracker_GetRecentDamageEvent( damageEventID )
+	DamageEvent existingEvent = Tracker_GetRecentDamageEvent( damageEventKey )
 
 	#if DEVELOPER && DEBUGDMG
 		print( format("\n\n\n Event exists: %s \n\n\n", existingEvent.isValid ? "true" : "false") )
@@ -3640,7 +3633,7 @@ void function Tracker_OnPlayerDamaged( entity victim, var damageInfo )
             DamageEvent newEvent = Tracker_CreateDamageEvent( weaponSource, damageAmount, actionTimestamp, shotIdentifier, attackerHandle, victimHandle )
             newEvent.shotIdentifier = shotIdentifier
             Tracker_HandleDamage( newEvent, attacker, weaponSource, damageAmount, damageInfo, victim )
-			Tracker_StoreDamageEvent( damageEventID, newEvent )
+			Tracker_StoreDamageEvent( damageEventKey, newEvent )
             file.allDamageEvents.append( newEvent )
         }
 		else
@@ -3649,7 +3642,7 @@ void function Tracker_OnPlayerDamaged( entity victim, var damageInfo )
             existingEvent.isNew = false
 			existingEvent.lastWeaponSource = weaponSource
             Tracker_HandleDamage( existingEvent, attacker, weaponSource, damageAmount, damageInfo, victim )
-			Tracker_StoreDamageEvent( damageEventID, existingEvent )
+			Tracker_StoreDamageEvent( damageEventKey, existingEvent )
         }
     }
 	else //event doesn't exist
@@ -3658,7 +3651,7 @@ void function Tracker_OnPlayerDamaged( entity victim, var damageInfo )
         DamageEvent newEvent = Tracker_CreateDamageEvent( weaponSource, damageAmount, actionTimestamp, shotIdentifier, attackerHandle, victimHandle )
         newEvent.shotIdentifier = shotIdentifier
         Tracker_HandleDamage( newEvent, attacker, weaponSource, damageAmount, damageInfo, victim )
-		Tracker_StoreDamageEvent( damageEventID, newEvent )
+		Tracker_StoreDamageEvent( damageEventKey, newEvent )
         file.allDamageEvents.append( newEvent )
     }
 
@@ -3702,7 +3695,7 @@ void function __TrackerStatsHook_Damage( entity victim, var damageInfo )
 
 DamageEvent function Tracker_GetCurrentEventForAttackerOnVictim( int attackerHandle, int victimHandle )
 {
-	return Tracker_GetRecentDamageEvent( eventID( attackerHandle, victimHandle ) )
+	return Tracker_GetRecentDamageEvent( Tracker_GetDamageEventKey( attackerHandle, victimHandle ) )
 }
 
 DamageEvent function Tracker_GetCurrentEventByPlayerHandle_expensive( int playerHandle, bool attacker = true )
