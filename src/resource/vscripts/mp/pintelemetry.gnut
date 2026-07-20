@@ -391,7 +391,7 @@ struct //Todo: move appropriate to tracker.var
 	array< string > requestedStatsArray
 	array< PlayerMetrics > PlayerMetricsArray
 	array< DamageEvent > allDamageEvents
-	table< string, DamageEvent > allDamageEventsMap
+	table< string, int > allDamageEventsMap
 
 	bool _registerAllSettings
 	float maxWaitForBatchLoad
@@ -2578,7 +2578,7 @@ void function RecapStats(entity player, float damage, float hits, float shots, s
 
 
 
-DamageEvent function Tracker_CreateDamageEvent( int weaponSource, float damage, float actionTimestamp, float shotIdentifier, int attackerHandle, int victimHandle )
+int function Tracker_CreateDamageEvent( int weaponSource, float damage, float actionTimestamp, float shotIdentifier, int attackerHandle, int victimHandle )
 {
 	#if DEVELOPER && DEBUGDMG
 		printw( "Tracker_CreateDamageEvent: attackerHandle:", attackerHandle, "victimHandle:", victimHandle )
@@ -2599,15 +2599,51 @@ DamageEvent function Tracker_CreateDamageEvent( int weaponSource, float damage, 
 	event.shotIdentifier = shotIdentifier //int
 	event.isValid = true
 
-    return event
+	file.allDamageEvents.append( event )
+	return file.allDamageEvents.len() - 1
 }
 
-void function Tracker_StoreDamageEvent( string identifier, DamageEvent event )
+void function Tracker_StoreDamageEvent( string identifier, int eventIndex )
 {
+	if( eventIndex < 0 || eventIndex >= file.allDamageEvents.len() )
+		return
+
 	if( identifier in file.allDamageEventsMap )
-		file.allDamageEventsMap[ identifier ] = event
+		file.allDamageEventsMap[ identifier ] = eventIndex
 	else
-		file.allDamageEventsMap[ identifier ] <- event
+		file.allDamageEventsMap[ identifier ] <- eventIndex
+}
+
+void function Tracker_RemoveDamageEventAtIndex( int eventIndex )
+{
+	if( eventIndex < 0 || eventIndex >= file.allDamageEvents.len() )
+		return
+
+	array<string> idsToDelete = []
+	array<string> idsToShift = []
+	array<int> shiftedIndexes = []
+
+	foreach( string identifier, int activeEventIndex in file.allDamageEventsMap )
+	{
+		if( activeEventIndex == eventIndex )
+			idsToDelete.append( identifier )
+		else if( activeEventIndex > eventIndex )
+		{
+			idsToShift.append( identifier )
+			shiftedIndexes.append( activeEventIndex - 1 )
+		}
+	}
+
+	foreach( string identifier in idsToDelete )
+	{
+		if( identifier in file.allDamageEventsMap )
+			delete file.allDamageEventsMap[ identifier ]
+	}
+
+	for( int i = 0; i < idsToShift.len(); ++i )
+		file.allDamageEventsMap[ idsToShift[ i ] ] = shiftedIndexes[ i ]
+
+	file.allDamageEvents.remove( eventIndex )
 }
 
 void function RemoveDamageEvents( int attacker_handle, int victim_handle ) //Todo possibly a queue
@@ -2624,9 +2660,15 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 {
 	array<string> idsToDelete = []
 
-	foreach( string identifier, DamageEvent event in file.allDamageEventsMap )
+	foreach( string identifier, int eventIndex in file.allDamageEventsMap )
 	{
-		if( event.attackerHandle == playerHandle || event.victimHandle == playerHandle )
+		if( eventIndex < 0 || eventIndex >= file.allDamageEvents.len() )
+		{
+			idsToDelete.append( identifier )
+			continue
+		}
+
+		if( file.allDamageEvents[ eventIndex ].attackerHandle == playerHandle || file.allDamageEvents[ eventIndex ].victimHandle == playerHandle )
 			idsToDelete.append( identifier )
 	}
 
@@ -2745,7 +2787,7 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 		float glidegrace = 2.2
 
 		// temp array to analyze data
-		array<DamageEvent> relevantDamageEvents
+		array<int> relevantDamageEventIndexes
 
 		// initialize temporary attacker array totals. these indexes will all be aligned.
 		array<int> player_handles
@@ -2771,29 +2813,32 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 		int attackerSuperglides = 0
 
 		// collect all DamageEvents on victim and calculate total damage
-		foreach ( DamageEvent event in file.allDamageEvents )
+		for( int eventIndex = 0; eventIndex < file.allDamageEvents.len(); ++eventIndex )
 		{
-			if ( event.victimHandle == victim_handle )
+			if( !file.allDamageEvents[ eventIndex ].isValid )
+				continue
+
+			if ( file.allDamageEvents[ eventIndex ].victimHandle == victim_handle )
 			{
-				totalDamageToVictim += event.damage
-				relevantDamageEvents.append( event )
+				totalDamageToVictim += file.allDamageEvents[ eventIndex ].damage
+				relevantDamageEventIndexes.append( eventIndex )
 
 				#if DEVELOPER && DEBUGDMG
-					sqprint( format( "Tracker: Event timestamp: %d", event.actionTimestamp ) )
-					sqprint( format( "Tracker: Event lasthit: %d", event.lastHitTimestamp ) )
+					sqprint( format( "Tracker: Event timestamp: %d", file.allDamageEvents[ eventIndex ].actionTimestamp ) )
+					sqprint( format( "Tracker: Event lasthit: %d", file.allDamageEvents[ eventIndex ].lastHitTimestamp ) )
 				#endif
 
-				if ( event.actionTimestamp <= fightStartTime )
-					fightStartTime = event.actionTimestamp
+				if ( file.allDamageEvents[ eventIndex ].actionTimestamp <= fightStartTime )
+					fightStartTime = file.allDamageEvents[ eventIndex ].actionTimestamp
 
-				if ( event.lastHitTimestamp >= fightEndTime )
-					fightEndTime = ( event.lastHitTimestamp + 0.0500 )
+				if ( file.allDamageEvents[ eventIndex ].lastHitTimestamp >= fightEndTime )
+					fightEndTime = ( file.allDamageEvents[ eventIndex ].lastHitTimestamp + 0.0500 )
 			}
 			#if DEVELOPER && DEBUGDMG
 				else
 				{
-					sqprint( format( "Tracker: event.victimHandle != victim_handle. values: %d, %d", event.victimHandle, victim_handle ) )
-					DEV_PrintDamageEvent( event )
+					sqprint( format( "Tracker: event.victimHandle != victim_handle. values: %d, %d", file.allDamageEvents[ eventIndex ].victimHandle, victim_handle ) )
+					DEV_PrintDamageEvent( file.allDamageEvents[ eventIndex ] )
 				}
 			#endif
 		}
@@ -2832,41 +2877,41 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 		/////////////////////////////////////////////////////////////////////////////////////////
 		// log DamageEvents that fall within the time window if damages are less than full health
 
-		foreach ( int eventIndex, DamageEvent event in relevantDamageEvents )
+		foreach ( int eventIndex in relevantDamageEventIndexes )
 		{
-			if ( file.gamemode_type_1v1 || ( deathtime - event.actionTimestamp <= timeWindow ) )
+			if ( file.gamemode_type_1v1 || ( deathtime - file.allDamageEvents[ eventIndex ].actionTimestamp <= timeWindow ) )
 			{
-				attackerUID = StatPrintUID( GetPlayerUIDFromHandle( event.attackerHandle ) )
-				attackerName = GetPlayerNameFromHandle( event.attackerHandle )
+				attackerUID = StatPrintUID( GetPlayerUIDFromHandle( file.allDamageEvents[ eventIndex ].attackerHandle ) )
+				attackerName = GetPlayerNameFromHandle( file.allDamageEvents[ eventIndex ].attackerHandle )
 
-				totalDamageToVictim += event.damage
+				totalDamageToVictim += file.allDamageEvents[ eventIndex ].damage
 
-				string mul = event.hitCount > 1 ? "s" : "" //this needs to go
+				string mul = file.allDamageEvents[ eventIndex ].hitCount > 1 ? "s" : "" //this needs to go
 
 				//statement header
 				logString += "{" + attackerUID + "}{" + attackerName + "} dealt:"
 
-				if ( IsSpecialWeapon( event.weaponSource ) )
+				if ( IsSpecialWeapon( file.allDamageEvents[ eventIndex ].weaponSource ) )
 				{
-					int bulletsPerShot = GetBulletsPerShot( event.weaponSource )
-					int totalBulletsFired = event.hitCount * bulletsPerShot
+					int bulletsPerShot = GetBulletsPerShot( file.allDamageEvents[ eventIndex ].weaponSource )
+					int totalBulletsFired = file.allDamageEvents[ eventIndex ].hitCount * bulletsPerShot
 					logString += format("Entry: {%.2f} damage ON {%s}{%s} at time {%.2f} in {%d} hit%s {%d/%d} bullets with weapon {%s} headshots: {%d};",
-										event.damage, victimUID, victimName, event.actionTimestamp, event.hitCount, mul, event.bulletsHit, totalBulletsFired, DamageSourceIDToString( event.weaponSource ), event.headshots )
+										file.allDamageEvents[ eventIndex ].damage, victimUID, victimName, file.allDamageEvents[ eventIndex ].actionTimestamp, file.allDamageEvents[ eventIndex ].hitCount, mul, file.allDamageEvents[ eventIndex ].bulletsHit, totalBulletsFired, DamageSourceIDToString( file.allDamageEvents[ eventIndex ].weaponSource ), file.allDamageEvents[ eventIndex ].headshots )
 				}
 				else
 				{
 					logString += format("Entry: {%.2f} damage ON {%s}{%s} at time {%.2f} in {%d} hit%s with weapon {%s} headshots: {%d};",
-										event.damage, victimUID, victimName, event.actionTimestamp, event.hitCount, mul, DamageSourceIDToString( event.weaponSource ), event.headshots )
+										file.allDamageEvents[ eventIndex ].damage, victimUID, victimName, file.allDamageEvents[ eventIndex ].actionTimestamp, file.allDamageEvents[ eventIndex ].hitCount, mul, DamageSourceIDToString( file.allDamageEvents[ eventIndex ].weaponSource ), file.allDamageEvents[ eventIndex ].headshots )
 				}
 
 
 				// attackers totals
-				int playerIndex = player_handles.find( event.attackerHandle )
+				int playerIndex = player_handles.find( file.allDamageEvents[ eventIndex ].attackerHandle )
 
 				if ( playerIndex == -1 )
 				{
 					// new attacker
-					player_handles.append( event.attackerHandle )
+					player_handles.append( file.allDamageEvents[ eventIndex ].attackerHandle )
 					playerDISPLAYNAME.append(attackerName)
 					playerTotalDamages.append(0.0)
 					playerTotalHits.append(0)
@@ -2877,9 +2922,9 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 					playerIndex = player_handles.len() - 1;
 				}
 
-					playerTotalDamages[playerIndex] += event.damage
-					playerTotalHits[playerIndex] += event.hitCount
-					playerTotalHeadshots[playerIndex] += event.headshots
+					playerTotalDamages[playerIndex] += file.allDamageEvents[ eventIndex ].damage
+					playerTotalHits[playerIndex] += file.allDamageEvents[ eventIndex ].hitCount
+					playerTotalHeadshots[playerIndex] += file.allDamageEvents[ eventIndex ].headshots
 			}
 		}
 		/////////////////////////////////////////////////////////////////////////////////////////
@@ -2889,40 +2934,43 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 
 		if ( !file.gamemode_type_1v1 && totalDamageToVictim < file.FS_MaxHealth )
 		{
-			foreach ( int eventIndex, DamageEvent event in file.allDamageEvents )
+			for( int eventIndex = 0; eventIndex < file.allDamageEvents.len(); ++eventIndex )
 			{
-				attackerName = GetPlayerNameFromHandle( event.attackerHandle )
+				if( !file.allDamageEvents[ eventIndex ].isValid )
+					continue
 
-				if ( event.victimHandle == victim_handle && ( deathtime - event.actionTimestamp <= timeWindow ) )
+				attackerName = GetPlayerNameFromHandle( file.allDamageEvents[ eventIndex ].attackerHandle )
+
+				if ( file.allDamageEvents[ eventIndex ].victimHandle == victim_handle && ( deathtime - file.allDamageEvents[ eventIndex ].actionTimestamp <= timeWindow ) )
 				{
-					if ( totalDamageToVictim + event.damage <= file.FS_MaxHealth )
+					if ( totalDamageToVictim + file.allDamageEvents[ eventIndex ].damage <= file.FS_MaxHealth )
 					{
-						totalDamageToVictim += event.damage;
+						totalDamageToVictim += file.allDamageEvents[ eventIndex ].damage;
 
-						string mul = event.hitCount > 1 ? "s" : ""; //go away
+						string mul = file.allDamageEvents[ eventIndex ].hitCount > 1 ? "s" : ""; //go away
 
-						logString += "{" + GetPlayerUIDFromHandle( event.attackerHandle ) + "}{" + attackerName + "} dealt:";
+						logString += "{" + GetPlayerUIDFromHandle( file.allDamageEvents[ eventIndex ].attackerHandle ) + "}{" + attackerName + "} dealt:";
 
-						if ( IsSpecialWeapon( event.weaponSource ) )
+						if ( IsSpecialWeapon( file.allDamageEvents[ eventIndex ].weaponSource ) )
 						{
-							int bulletsPerShot = GetBulletsPerShot(event.weaponSource)
-							int totalBulletsFired = event.hitCount * bulletsPerShot;
+							int bulletsPerShot = GetBulletsPerShot(file.allDamageEvents[ eventIndex ].weaponSource)
+							int totalBulletsFired = file.allDamageEvents[ eventIndex ].hitCount * bulletsPerShot;
 							logString += format( "Entry: {%.2f} damage ON {%s}{%s} at time {%.2f} in {%d} hit%s {%d/%d} bullets with weapon {%s} headshots: {%d};",
-												event.damage, victimUID, victimName, event.actionTimestamp, event.hitCount, mul, event.bulletsHit, totalBulletsFired, DamageSourceIDToString( event.weaponSource ), event.headshots )
+												file.allDamageEvents[ eventIndex ].damage, victimUID, victimName, file.allDamageEvents[ eventIndex ].actionTimestamp, file.allDamageEvents[ eventIndex ].hitCount, mul, file.allDamageEvents[ eventIndex ].bulletsHit, totalBulletsFired, DamageSourceIDToString( file.allDamageEvents[ eventIndex ].weaponSource ), file.allDamageEvents[ eventIndex ].headshots )
 						}
 						else
 						{
 							logString += format( "Entry: {%.2f} damage ON {%s}{%s} at time {%.2f} in {%d} hit%s with weapon {%s} headshots: {%d};",
-												event.damage, victimUID, victimName, event.actionTimestamp, event.hitCount, mul, DamageSourceIDToString( event.weaponSource ), event.headshots )
+												file.allDamageEvents[ eventIndex ].damage, victimUID, victimName, file.allDamageEvents[ eventIndex ].actionTimestamp, file.allDamageEvents[ eventIndex ].hitCount, mul, DamageSourceIDToString( file.allDamageEvents[ eventIndex ].weaponSource ), file.allDamageEvents[ eventIndex ].headshots )
 						}
 
 
 						//attackers jumps & total shots for fight
-						int playerIndex = player_handles.find( event.attackerHandle )
+						int playerIndex = player_handles.find( file.allDamageEvents[ eventIndex ].attackerHandle )
 						if ( playerIndex == -1 )
 						{
 							// new attacker
-							player_handles.append( event.attackerHandle )
+							player_handles.append( file.allDamageEvents[ eventIndex ].attackerHandle )
 							playerDISPLAYNAME.append( attackerName )
 							playerTotalDamages.append(0.0)
 							playerTotalHits.append(0)
@@ -2933,9 +2981,9 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 							playerIndex = player_handles.len() - 1
 						}
 
-						playerTotalDamages[ playerIndex ] += event.damage
-						playerTotalHits[ playerIndex ] += event.hitCount
-						playerTotalHeadshots[ playerIndex ] += event.headshots
+						playerTotalDamages[ playerIndex ] += file.allDamageEvents[ eventIndex ].damage
+						playerTotalHits[ playerIndex ] += file.allDamageEvents[ eventIndex ].hitCount
+						playerTotalHeadshots[ playerIndex ] += file.allDamageEvents[ eventIndex ].headshots
 					}
 				}
 			}
@@ -2946,30 +2994,33 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 		////////////////////////////////// 		victim			/////////////////////////////////
 		/////////////////////////////////////////////////////////////////////////////////////////
 
-		foreach ( int eventIndex, DamageEvent event in file.allDamageEvents )
+		for( int eventIndex = 0; eventIndex < file.allDamageEvents.len(); ++eventIndex )
 		{
-			if ( event.attackerHandle == victim_handle && ( file.gamemode_type_1v1 || deathtime - event.actionTimestamp <= timeWindow ) )
+			if( !file.allDamageEvents[ eventIndex ].isValid )
+				continue
+
+			if ( file.allDamageEvents[ eventIndex ].attackerHandle == victim_handle && ( file.gamemode_type_1v1 || deathtime - file.allDamageEvents[ eventIndex ].actionTimestamp <= timeWindow ) )
 			{
-				victimTotalDamage += event.damage
-				victimTotalHits += event.hitCount
-				victimTotalHeadshots += event.headshots
+				victimTotalDamage += file.allDamageEvents[ eventIndex ].damage
+				victimTotalHits += file.allDamageEvents[ eventIndex ].hitCount
+				victimTotalHeadshots += file.allDamageEvents[ eventIndex ].headshots
 
 
-				string mul = event.hitCount > 1 ? "s" : "" //needs to go
+				string mul = file.allDamageEvents[ eventIndex ].hitCount > 1 ? "s" : "" //needs to go
 
 				logString += "{" + victimUID + "}{" + string( victimName ) + "} dealt:" //Note: don't confuse entity struct with damage event struct, victim entity is current attacker
 
-				if ( IsSpecialWeapon( event.weaponSource ) )
+				if ( IsSpecialWeapon( file.allDamageEvents[ eventIndex ].weaponSource ) )
 				{
-					int bulletsPerShot = GetBulletsPerShot( event.weaponSource )
-					int totalBulletsFired = event.hitCount * bulletsPerShot;
+					int bulletsPerShot = GetBulletsPerShot( file.allDamageEvents[ eventIndex ].weaponSource )
+					int totalBulletsFired = file.allDamageEvents[ eventIndex ].hitCount * bulletsPerShot;
 					logString += format("Entry: {%.2f} damage ON {%s}{%s} at time {%.2f} in {%d} hit%s {%d/%d} bullets with weapon {%s} headshots: {%d};",
-										event.damage, GetPlayerUIDFromHandle( event.victimHandle ), GetPlayerNameFromHandle( event.victimHandle ), event.actionTimestamp, event.hitCount, mul, event.bulletsHit, totalBulletsFired, DamageSourceIDToString( event.weaponSource ), event.headshots )
+										file.allDamageEvents[ eventIndex ].damage, GetPlayerUIDFromHandle( file.allDamageEvents[ eventIndex ].victimHandle ), GetPlayerNameFromHandle( file.allDamageEvents[ eventIndex ].victimHandle ), file.allDamageEvents[ eventIndex ].actionTimestamp, file.allDamageEvents[ eventIndex ].hitCount, mul, file.allDamageEvents[ eventIndex ].bulletsHit, totalBulletsFired, DamageSourceIDToString( file.allDamageEvents[ eventIndex ].weaponSource ), file.allDamageEvents[ eventIndex ].headshots )
 				}
 				else
 				{
 					logString += format("Entry: {%.2f} damage ON {%s}{%s} at time {%.2f} in {%d} hit%s with weapon {%s} headshots: {%d};",
-										event.damage, GetPlayerUIDFromHandle( event.victimHandle ), GetPlayerNameFromHandle( event.victimHandle ), event.actionTimestamp, event.hitCount, mul, DamageSourceIDToString( event.weaponSource ), event.headshots )
+										file.allDamageEvents[ eventIndex ].damage, GetPlayerUIDFromHandle( file.allDamageEvents[ eventIndex ].victimHandle ), GetPlayerNameFromHandle( file.allDamageEvents[ eventIndex ].victimHandle ), file.allDamageEvents[ eventIndex ].actionTimestamp, file.allDamageEvents[ eventIndex ].hitCount, mul, DamageSourceIDToString( file.allDamageEvents[ eventIndex ].weaponSource ), file.allDamageEvents[ eventIndex ].headshots )
 				}
 			}
 		}
@@ -2980,6 +3031,7 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 		/////////////////////////////////////////////////////////////////////////////////////////
 
 		//queue events for deletion immediately so they are not reused in the next fight
+		SDK_WriteRuntimeBreadcrumb( "tracker_endfight_cleanup", format( "fight=%d victim=%d attacker=%d damageMap=%d damageArr=%d", iFightID, victim_handle, attacker_handle, file.allDamageEventsMap.len(), file.allDamageEvents.len() ) )
 		RemoveDamageEvents( attacker_handle, victim_handle )
 
 		/////////////////////////////////////////////////////////////////////////////////////////
@@ -3256,7 +3308,7 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 			{
 				if ( file.allDamageEvents[i].attackerHandle == dead_victim_handle || file.allDamageEvents[i].attackerHandle == killer_attacker_handle )
 				{
-					file.allDamageEvents.remove(i)
+					Tracker_RemoveDamageEventAtIndex( i )
 					#if DEVELOPER
 						removed++;
 					#endif
@@ -3266,7 +3318,7 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 			{
 				if ( Time() - fightEndTime > MAX_FIGHT_HISTORY_TIME || file.allDamageEvents[i].victimHandle == dead_victim_handle )
 				{
-					file.allDamageEvents.remove(i)
+					Tracker_RemoveDamageEventAtIndex( i )
 					#if DEVELOPER
 						removed++;
 					#endif
@@ -3275,8 +3327,8 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 		}
 
 		#if DEVELOPER && DEBUGDMG
-			foreach ( event in file.allDamageEvents )
-				sqprint( format( "Tracker: Remaining event handle: dealer: %d, reciever: %d ", event.attackerHandle, event.victimHandle ) )
+			for( int eventIndex = 0; eventIndex < file.allDamageEvents.len(); ++eventIndex )
+				sqprint( format( "Tracker: Remaining event handle: dealer: %d, reciever: %d ", file.allDamageEvents[ eventIndex ].attackerHandle, file.allDamageEvents[ eventIndex ].victimHandle ) )
 
 			sqprint( format( "Tracker: Total remaining events: %d, Total removed: %d", file.allDamageEvents.len(), removed ) )
 		#endif
@@ -3356,14 +3408,14 @@ bool function WeaponBypassesHits( int weaponSource )
 	return ( weaponSource in weaponBypassesHitCount )
 }
 
-void function Tracker_HandleDamage( DamageEvent event, entity attacker, int weaponSource, float damageAmount, var damageInfo, entity victim )
+void function Tracker_HandleDamage( int eventIndex, entity attacker, int weaponSource, float damageAmount, var damageInfo, entity victim )
 {
-	if ( !IsValid( victim ) || !IsValid( attacker ) )
+	if ( eventIndex < 0 || eventIndex >= file.allDamageEvents.len() || !IsValid( victim ) || !IsValid( attacker ) )
 		return
 
-	int previousHitCount = event.hitCount
-	float previousBulletsHit = event.bulletsHit
-	int previousHeadshots = event.headshots
+	int previousHitCount = file.allDamageEvents[ eventIndex ].hitCount
+	float previousBulletsHit = file.allDamageEvents[ eventIndex ].bulletsHit
+	int previousHeadshots = file.allDamageEvents[ eventIndex ].headshots
 
 	float currentHealth = float( victim.GetHealth() + victim.GetShieldHealth() )
 
@@ -3383,7 +3435,7 @@ void function Tracker_HandleDamage( DamageEvent event, entity attacker, int weap
 
 	// headshot count
 	if ( DamageInfo_GetCustomDamageType( damageInfo ) & DF_HEADSHOT )
-		event.headshots++
+		file.allDamageEvents[ eventIndex ].headshots++
 
 	bool multiple = false
 
@@ -3394,48 +3446,48 @@ void function Tracker_HandleDamage( DamageEvent event, entity attacker, int weap
 	//{
 		if ( IsSpecialWeapon( weaponSource ) )
 		{
-			if ( event.lastHitTimestamp == 0 || ( currentTime - event.lastHitTimestamp ) * 1000 > 100 )
+			if ( file.allDamageEvents[ eventIndex ].lastHitTimestamp == 0 || ( currentTime - file.allDamageEvents[ eventIndex ].lastHitTimestamp ) * 1000 > 100 )
 			{
-				event.hitCount++
+				file.allDamageEvents[ eventIndex ].hitCount++
 				multiple = true
 			}
 		}
 		else
 		{
-			event.hitCount++
+			file.allDamageEvents[ eventIndex ].hitCount++
 		}
 	//}
 
 	// update DamageEvent
-	event.lastHitTimestamp = currentTime
-	event.bulletsHit += bulletsHit
+	file.allDamageEvents[ eventIndex ].lastHitTimestamp = currentTime
+	file.allDamageEvents[ eventIndex ].bulletsHit += bulletsHit
 
-	if ( event.isNew )
+	if ( file.allDamageEvents[ eventIndex ].isNew )
 	{
-		event.damage = damageAmount
+		file.allDamageEvents[ eventIndex ].damage = damageAmount
 
 		if ( multiple )
-			event.isNew = true
+			file.allDamageEvents[ eventIndex ].isNew = true
 		else
-			event.isNew = false
+			file.allDamageEvents[ eventIndex ].isNew = false
 	}
 	else
 	{
-		event.damage += damageAmount
+		file.allDamageEvents[ eventIndex ].damage += damageAmount
 
 		if ( multiple )
-			event.isNew = true
+			file.allDamageEvents[ eventIndex ].isNew = true
 	}
 
-	int hitsDelta = event.hitCount - previousHitCount
+	int hitsDelta = file.allDamageEvents[ eventIndex ].hitCount - previousHitCount
 	if ( hitsDelta < 0 )
 		hitsDelta = 0
 
-	float bulletsHitDelta = event.bulletsHit - previousBulletsHit
+	float bulletsHitDelta = file.allDamageEvents[ eventIndex ].bulletsHit - previousBulletsHit
 	if ( bulletsHitDelta < 0.0 )
 		bulletsHitDelta = 0.0
 
-	int headshotsDelta = event.headshots - previousHeadshots
+	int headshotsDelta = file.allDamageEvents[ eventIndex ].headshots - previousHeadshots
 	if ( headshotsDelta < 0 )
 		headshotsDelta = 0
 
@@ -3461,12 +3513,35 @@ string function Tracker_GetDamageEventKey( int attackerHandle, int victimHandle 
 	return format( "%d:%d", attackerHandle, victimHandle )
 }
 
+int function Tracker_GetRecentDamageEventIndex( string eventKey )
+{
+	if( !( eventKey in file.allDamageEventsMap ) )
+		return -1
+
+	int eventIndex = file.allDamageEventsMap[ eventKey ]
+	if( eventIndex < 0 || eventIndex >= file.allDamageEvents.len() || !file.allDamageEvents[ eventIndex ].isValid )
+	{
+		delete file.allDamageEventsMap[ eventKey ]
+		return -1
+	}
+
+	string storedEventKey = Tracker_GetDamageEventKey( file.allDamageEvents[ eventIndex ].attackerHandle, file.allDamageEvents[ eventIndex ].victimHandle )
+	if( storedEventKey != eventKey )
+	{
+		delete file.allDamageEventsMap[ eventKey ]
+		return -1
+	}
+
+	return eventIndex
+}
+
 DamageEvent function Tracker_GetRecentDamageEvent( string eventKey )
 {
 	DamageEvent event
+	int eventIndex = Tracker_GetRecentDamageEventIndex( eventKey )
 
-	if( eventKey in file.allDamageEventsMap )
-		return file.allDamageEventsMap[ eventKey ]
+	if( eventIndex >= 0 )
+		return file.allDamageEvents[ eventIndex ]
 
 	return event
 }
@@ -3506,10 +3581,11 @@ DamageEvent function Tracker_GetRecentDamageEvent( string eventKey )
 	void function DEV_PrintDamageMap()
 	{
 		printt( "Tracker: DEV_PrintDamageEvent length:", file.allDamageEventsMap.len() )
-		foreach( string identifier, DamageEvent event in file.allDamageEventsMap )
+		foreach( string identifier, int eventIndex in file.allDamageEventsMap )
 		{
 			printt( "Tracker: event identifier:", identifier )
-			DEV_PrintDamageEvent( event )
+			if( eventIndex >= 0 && eventIndex < file.allDamageEvents.len() )
+				DEV_PrintDamageEvent( file.allDamageEvents[ eventIndex ] )
 		}
 	}
 #endif
@@ -3616,59 +3692,54 @@ void function Tracker_OnPlayerDamaged( entity victim, var damageInfo )
 		SDK_WriteRuntimeBreadcrumb( "tracker_damage", format( "victim=%d attacker=%d source=%d damage=%.1f event=%s map=%d arr=%d", victimHandle, attackerHandle, weaponSource, damageAmount, damageEventKey, file.allDamageEventsMap.len(), file.allDamageEvents.len() ) )
 	}
 
-	DamageEvent existingEvent = Tracker_GetRecentDamageEvent( damageEventKey )
+	int existingEventIndex = Tracker_GetRecentDamageEventIndex( damageEventKey )
 
 	#if DEVELOPER && DEBUGDMG
-		print( format("\n\n\n Event exists: %s \n\n\n", existingEvent.isValid ? "true" : "false") )
+		print( format("\n\n\n Event exists: %s \n\n\n", existingEventIndex >= 0 ? "true" : "false") )
 	#endif
 
-    if ( existingEvent.isValid ) //event exists
+	if ( existingEventIndex >= 0 ) //event exists
 	{
-        // last weapon used from the existing event
-        int lastWeaponSource = existingEvent.lastWeaponSource
+		// last weapon used from the existing event
+		int lastWeaponSource = file.allDamageEvents[ existingEventIndex ].lastWeaponSource
 
-        // check if weapon changed or new shot from special weapon (new event block)
-        if ( lastWeaponSource != weaponSource || ( IsSpecialWeapon( weaponSource ) && existingEvent.shotIdentifier != shotIdentifier ) )
+		// check if weapon changed or new shot from special weapon (new event block)
+		if ( lastWeaponSource != weaponSource || ( IsSpecialWeapon( weaponSource ) && file.allDamageEvents[ existingEventIndex ].shotIdentifier != shotIdentifier ) )
 		{
-            DamageEvent newEvent = Tracker_CreateDamageEvent( weaponSource, damageAmount, actionTimestamp, shotIdentifier, attackerHandle, victimHandle )
-            newEvent.shotIdentifier = shotIdentifier
-            Tracker_HandleDamage( newEvent, attacker, weaponSource, damageAmount, damageInfo, victim )
-			Tracker_StoreDamageEvent( damageEventKey, newEvent )
-            file.allDamageEvents.append( newEvent )
-        }
+			int newEventIndex = Tracker_CreateDamageEvent( weaponSource, damageAmount, actionTimestamp, shotIdentifier, attackerHandle, victimHandle )
+			Tracker_HandleDamage( newEventIndex, attacker, weaponSource, damageAmount, damageInfo, victim )
+			Tracker_StoreDamageEvent( damageEventKey, newEventIndex )
+		}
 		else
 		{
-            // update existing damage event
-            existingEvent.isNew = false
-			existingEvent.lastWeaponSource = weaponSource
-            Tracker_HandleDamage( existingEvent, attacker, weaponSource, damageAmount, damageInfo, victim )
-			Tracker_StoreDamageEvent( damageEventKey, existingEvent )
-        }
-    }
+			// update existing damage event
+			file.allDamageEvents[ existingEventIndex ].isNew = false
+			file.allDamageEvents[ existingEventIndex ].lastWeaponSource = weaponSource
+			Tracker_HandleDamage( existingEventIndex, attacker, weaponSource, damageAmount, damageInfo, victim )
+		}
+	}
 	else //event doesn't exist
 	{
-        //create new one
-        DamageEvent newEvent = Tracker_CreateDamageEvent( weaponSource, damageAmount, actionTimestamp, shotIdentifier, attackerHandle, victimHandle )
-        newEvent.shotIdentifier = shotIdentifier
-        Tracker_HandleDamage( newEvent, attacker, weaponSource, damageAmount, damageInfo, victim )
-		Tracker_StoreDamageEvent( damageEventKey, newEvent )
-        file.allDamageEvents.append( newEvent )
-    }
+		//create new one
+		int newEventIndex = Tracker_CreateDamageEvent( weaponSource, damageAmount, actionTimestamp, shotIdentifier, attackerHandle, victimHandle )
+		Tracker_HandleDamage( newEventIndex, attacker, weaponSource, damageAmount, damageInfo, victim )
+		Tracker_StoreDamageEvent( damageEventKey, newEventIndex )
+	}
 
 
 	#if DEVELOPER && DEBUGDMG
 		printt( "Tracker: Current Damage Events:", file.allDamageEvents.len(), "\n" )
-		foreach( DamageEvent event in file.allDamageEvents )
+		for( int eventIndex = 0; eventIndex < file.allDamageEvents.len(); ++eventIndex )
 			print
 			(
 				format
 				(
 					"Attacker: %d, Victim: %d, Damage: %.2f, EventBlockStartTime: %.2f, shots: %d \n",
-					event.attackerHandle,
-					event.victimHandle,
-					event.damage,
-					event.actionTimestamp,
-					event.hitCount
+					file.allDamageEvents[ eventIndex ].attackerHandle,
+					file.allDamageEvents[ eventIndex ].victimHandle,
+					file.allDamageEvents[ eventIndex ].damage,
+					file.allDamageEvents[ eventIndex ].actionTimestamp,
+					file.allDamageEvents[ eventIndex ].hitCount
 				)
 			)
 	#endif
