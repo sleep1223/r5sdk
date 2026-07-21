@@ -18,6 +18,7 @@ global function Stats__ClearOutboundCache
 global function Stats__AddPlayerStatsTable
 global function Stats__GetPlayerStatsTable
 global function Stats__GetRoundStatsTables
+global function Stats__PrunePlayerStatsTables
 global function Stats__ResetTableByValueType
 global function Stats__PlayerExists
 global function Stats__RawGetStat
@@ -95,6 +96,44 @@ StatsTable function Stats__GetPlayerStatsTable( UIDString uid )
 table< UIDString, StatsTable > function Stats__GetRoundStatsTables()
 {
 	return file.localStatsTables
+}
+
+int function Stats__PrunePlayerStatsTables( array<string> activeUIDs )
+{
+	int previousEntryCount = file.onlineStatsTables.len() + file.localStatsTables.len()
+	table< UIDString, StatsTable > activeOnlineStatsTables = {}
+	table< UIDString, StatsTable > activeLocalStatsTables = {}
+
+	foreach( string uid in activeUIDs )
+	{
+		if( uid == "" )
+			continue
+
+		if( uid in file.onlineStatsTables && !( uid in activeOnlineStatsTables ) )
+			activeOnlineStatsTables[ uid ] <- file.onlineStatsTables[ uid ]
+
+		if( uid in activeLocalStatsTables )
+			continue
+
+		if( uid in file.localStatsTables )
+		{
+			StatsTable localStats = file.localStatsTables[ uid ]
+			Stats__ResetTableByValueType( localStats )
+			activeLocalStatsTables[ uid ] <- localStats
+		}
+		else if( uid in activeOnlineStatsTables )
+		{
+			StatsTable localStats = clone activeOnlineStatsTables[ uid ]
+			Stats__ResetTableByValueType( localStats )
+			activeLocalStatsTables[ uid ] <- localStats
+		}
+	}
+
+	file.onlineStatsTables = activeOnlineStatsTables
+	file.localStatsTables = activeLocalStatsTables
+
+	int currentEntryCount = file.onlineStatsTables.len() + file.localStatsTables.len()
+	return previousEntryCount > currentEntryCount ? previousEntryCount - currentEntryCount : 0
 }
 
 StatsTable function EmptyStats()
@@ -664,6 +703,7 @@ global function GetPlayerStatArrayBool
 global function GetPlayerStatArrayFloat
 global function PlayerStatArray_Append
 global function Stats__RawGetStat
+global function Stats__PrunePlayerStatsTables
 
 array<string> function Stats__GetStatKeys(){ return [] }
 
@@ -684,6 +724,7 @@ array<float> function GetPlayerStatArrayFloat( string player_oid, string statnam
 array<bool> function GetPlayerStatArrayBool( string player_oid, string statname ){ return [] }
 void function PlayerStatArray_Append( string player_oid, string statname, var value ){}
 var function Stats__RawGetStat( string uid, string key ){ return "" }
+int function Stats__PrunePlayerStatsTables( array<string> activeUIDs ){ return 0 }
 #endif // ELSE !TRACKER && !HAS_TRACKER_DLL
 
 // SHARED

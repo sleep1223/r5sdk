@@ -1559,21 +1559,48 @@ void function __DestroyStats()
 	file.bShouldShip = false
 	file.bStatsShipped = false
 
+	int previousHandleCount = file.HandleToPlayerData.len()
+	int previousPlayerDataCount = file.PlayerData.len()
+	int previousJumpCount = file.PlayerDidJump.len()
+	table< string, SettingsTable > previousPlayerData = file.PlayerData
+	table< string, bool > previousPlayerDidJump = file.PlayerDidJump
+
 	file.allDamageEventsMap = {}
 	file.allDamageEvents = []
 	file.PlayerMetricsArray = []
 	file.playerVerifyCounts = []
 	file.PlayerIdMap = {}
+	file.HandleToPlayerData = {}
+	file.PlayerData = {}
+	file.PlayerDidJump = {}
 	file.lastDamageBreadcrumbTime = 0.0
 	Stats__ClearOutboundCache()
 
-	foreach( string uid, StatsTable statsTbl in Stats__GetRoundStatsTables() )
-		Stats__ResetTableByValueType( statsTbl )
+	array<string> activeUIDs = []
 
 	foreach( player in GetPlayerArray() )
 	{
 		if( !IsValid( player ) )
 			continue
+
+		string uid = player.GetPlatformUID()
+		if( uid == "" )
+			continue
+
+		if( !activeUIDs.contains( uid ) )
+			activeUIDs.append( uid )
+
+		if( uid in previousPlayerData && !( uid in file.PlayerData ) )
+			file.PlayerData[ uid ] <- previousPlayerData[ uid ]
+
+		if( uid in previousPlayerDidJump && !( uid in file.PlayerDidJump ) )
+			file.PlayerDidJump[ uid ] <- previousPlayerDidJump[ uid ]
+
+		int playerHandle = player.GetEncodedEHandle()
+		PlayerData pdata
+		pdata.playerName = player.GetPlayerName()
+		pdata.playerUID = uid
+		file.HandleToPlayerData[ playerHandle ] <- pdata
 
 		int mID = InitializePlayerMetricsStructForPlayer( player )
 		if( mID == -1 )
@@ -1582,9 +1609,27 @@ void function __DestroyStats()
 		if( IsValidPlayerMetricsIndex( mID ) )
 		{
 			file.PlayerMetricsArray[ mID ].ent = player
-			file.PlayerMetricsArray[ mID ].playerHandle = player.GetEncodedEHandle()
+			file.PlayerMetricsArray[ mID ].playerHandle = playerHandle
 		}
 	}
+
+	int removedStatsEntries = Stats__PrunePlayerStatsTables( activeUIDs )
+	SDK_WriteRuntimeBreadcrumb
+	(
+		"tracker_round_reset",
+		format
+		(
+			"active=%d stats_removed=%d handles=%d->%d pdata=%d->%d jumps=%d->%d",
+			activeUIDs.len(),
+			removedStatsEntries,
+			previousHandleCount,
+			file.HandleToPlayerData.len(),
+			previousPlayerDataCount,
+			file.PlayerData.len(),
+			previousJumpCount,
+			file.PlayerDidJump.len()
+		)
+	)
 
 	foreach( callbackFunc in file.destroyStatCallbacks )
 		callbackFunc()
@@ -2658,21 +2703,20 @@ void function RemoveDamageEvents( int attacker_handle, int victim_handle ) //Tod
 
 void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 {
-	array<string> idsToDelete = []
+	for( int eventIndex = file.allDamageEvents.len() - 1; eventIndex >= 0; --eventIndex )
+	{
+		if( file.allDamageEvents[ eventIndex ].attackerHandle == playerHandle || file.allDamageEvents[ eventIndex ].victimHandle == playerHandle )
+			Tracker_RemoveDamageEventAtIndex( eventIndex )
+	}
 
+	array<string> invalidIdentifiers = []
 	foreach( string identifier, int eventIndex in file.allDamageEventsMap )
 	{
 		if( eventIndex < 0 || eventIndex >= file.allDamageEvents.len() )
-		{
-			idsToDelete.append( identifier )
-			continue
-		}
-
-		if( file.allDamageEvents[ eventIndex ].attackerHandle == playerHandle || file.allDamageEvents[ eventIndex ].victimHandle == playerHandle )
-			idsToDelete.append( identifier )
+			invalidIdentifiers.append( identifier )
 	}
 
-	foreach( string identifier in idsToDelete )
+	foreach( string identifier in invalidIdentifiers )
 	{
 		if( identifier in file.allDamageEventsMap )
 			delete file.allDamageEventsMap[ identifier ]
@@ -5070,7 +5114,10 @@ void function DEV_WriteAllTrackerErrors()
 		data += format( "|#error %s \n", error )
 
 	if( file.bTrackerEnabled && TrackerIsLogging__internal() )
+	{
 		TrackerLogEvent__internal( data, false )
+		file.errorArray = []
+	}
 }
 
 
