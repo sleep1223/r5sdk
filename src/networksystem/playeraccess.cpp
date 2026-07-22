@@ -67,6 +67,7 @@ struct PlayerAccessOnlinePlayer_t
 	int m_nHandle = 0;
 	int m_nSignonState = 0;
 	int m_nPing = 0;
+	int m_nLoss = 0;
 	int m_nPort = 0;
 	NucleusID_t m_nNucleusID = 0;
 	string m_svUID;
@@ -856,6 +857,7 @@ static void SV_BuildOnlinePlayersRequest(const PlayerAccessOnlineReport_t& repor
 		player.AddMember("handle", reportPlayer.m_nHandle, allocator);
 		player.AddMember("signonState", reportPlayer.m_nSignonState, allocator);
 		player.AddMember("ping", reportPlayer.m_nPing, allocator);
+		player.AddMember("loss", reportPlayer.m_nLoss, allocator);
 		player.AddMember("inputDevice", rapidjson::Value(reportPlayer.m_svInputDevice.c_str(), reportPlayer.m_svInputDevice.length(), allocator), allocator);
 
 		playersArray.PushBack(player, allocator);
@@ -960,6 +962,7 @@ static bool SV_BuildOnlinePlayerReport(CServer* const pServer, PlayerAccessOnlin
 		reportPlayer.m_nHandle = pClient->GetHandle();
 		reportPlayer.m_nSignonState = static_cast<int>(pClient->GetSignonState());
 		reportPlayer.m_nPing = static_cast<int>(1000.0f * Max(0.0f, pNetChan->GetAvgLatency(FLOW_OUTGOING)));
+		reportPlayer.m_nLoss = static_cast<int>(100.0f * Max(0.0f, Min(1.0f, pNetChan->GetAvgLoss(FLOW_INCOMING))));
 		reportPlayer.m_nPort = pNetChan->GetPort();
 		reportPlayer.m_nNucleusID = nNucleusID;
 		reportPlayer.m_svUID = Format("%llu", reportPlayer.m_nNucleusID);

@@ -52,3 +52,47 @@ const HSCRIPT CBaseEntity::GetScriptInstance()
 {
 	return v_CBaseEntity__GetScriptInstance(this);
 }
+
+bool CBaseEntity::DiscardFirstEntityLink(void)
+{
+	// Entity links use a 14-bit hash-table handle rather than an EHANDLE.
+	constexpr int INVALID_ENTITY_LINK_INDEX = 0x3FFF;
+
+	if (m_firstChildEntityLink != INVALID_ENTITY_LINK_INDEX)
+	{
+		m_firstChildEntityLink = INVALID_ENTITY_LINK_INDEX;
+		return true;
+	}
+
+	if (m_firstParentEntityLink != INVALID_ENTITY_LINK_INDEX)
+	{
+		m_firstParentEntityLink = INVALID_ENTITY_LINK_INDEX;
+		return true;
+	}
+
+	return false;
+}
+
+static void CBaseEntity_UnlinkFromEnt(CBaseEntity* const thisp, CBaseEntity* const pOther)
+{
+	if (!thisp)
+		return;
+
+	if (pOther)
+	{
+		v_CBaseEntity__UnlinkFromEnt(thisp, pOther);
+		return;
+	}
+
+	if (thisp->DiscardFirstEntityLink())
+	{
+		Warning(eDLL_T::SERVER,
+			"CBaseEntity::UnlinkFromEnt: discarded a stale entity link for '%p' because the linked entity no longer exists.\n",
+			static_cast<void*>(thisp));
+	}
+}
+
+void VCBaseEntity::Detour(const bool bAttach) const
+{
+	DetourSetup(&v_CBaseEntity__UnlinkFromEnt, &CBaseEntity_UnlinkFromEnt, bAttach);
+}

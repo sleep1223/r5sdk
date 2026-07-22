@@ -132,6 +132,7 @@ public:
 	inline const EHANDLE& GetOwnerEntityHandle(void) const { return m_hOwnerEntity; }
 
 	inline int		GetFlags(void) const { return m_fFlags; }
+	bool			DiscardFirstEntityLink(void);
 
 	const HSCRIPT GetScriptInstance();
 
@@ -358,6 +359,7 @@ protected:
 static_assert(sizeof(CBaseEntity) == 0xB08);
 
 inline const HSCRIPT(*v_CBaseEntity__GetScriptInstance)(CBaseEntity* thisp);
+inline void(*v_CBaseEntity__UnlinkFromEnt)(CBaseEntity* thisp, CBaseEntity* pOther);
 
 ///////////////////////////////////////////////////////////////////////////////
 class VCBaseEntity : public IDetour
@@ -365,14 +367,16 @@ class VCBaseEntity : public IDetour
 	virtual void GetAdr(void) const
 	{
 		LogFunAdr("CBaseEntity::GetScriptInstance", v_CBaseEntity__GetScriptInstance);
+		LogFunAdr("CBaseEntity::UnlinkFromEnt", v_CBaseEntity__UnlinkFromEnt);
 	}
 	virtual void GetFun(void) const
 	{
 		Module_FindPattern(g_GameDll, "48 8B C4 56 41 56 48 81 EC ?? ?? ?? ?? 48 83 B9").GetPtr(v_CBaseEntity__GetScriptInstance);
+		Module_FindPattern(g_GameDll, "48 89 5C 24 ?? 57 48 83 EC ?? 48 8B FA 48 8B D9 E8 ?? ?? ?? ?? 84 C0 74 ?? 0F B7 43 58 48 8D 8B C0 0A 00 00").GetPtr(v_CBaseEntity__UnlinkFromEnt);
 	}
 	virtual void GetVar(void) const {}
 	virtual void GetCon(void) const {}
-	virtual void Detour(const bool bAttach) const {};
+	virtual void Detour(const bool bAttach) const;
 };
 ///////////////////////////////////////////////////////////////////////////////
 
