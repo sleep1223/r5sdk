@@ -2664,31 +2664,16 @@ void function Tracker_RemoveDamageEventAtIndex( int eventIndex )
 	if( eventIndex < 0 || eventIndex >= file.allDamageEvents.len() )
 		return
 
-	array<string> idsToDelete = []
-	array<string> idsToShift = []
-	array<int> shiftedIndexes = []
+	if( !file.allDamageEvents[ eventIndex ].isValid )
+		return
 
-	foreach( string identifier, int activeEventIndex in file.allDamageEventsMap )
-	{
-		if( activeEventIndex == eventIndex )
-			idsToDelete.append( identifier )
-		else if( activeEventIndex > eventIndex )
-		{
-			idsToShift.append( identifier )
-			shiftedIndexes.append( activeEventIndex - 1 )
-		}
-	}
+	string identifier = format( "%d:%d", file.allDamageEvents[ eventIndex ].attackerHandle, file.allDamageEvents[ eventIndex ].victimHandle )
+	if( identifier in file.allDamageEventsMap && file.allDamageEventsMap[ identifier ] == eventIndex )
+		delete file.allDamageEventsMap[ identifier ]
 
-	foreach( string identifier in idsToDelete )
-	{
-		if( identifier in file.allDamageEventsMap )
-			delete file.allDamageEventsMap[ identifier ]
-	}
-
-	for( int i = 0; i < idsToShift.len(); ++i )
-		file.allDamageEventsMap[ idsToShift[ i ] ] = shiftedIndexes[ i ]
-
-	file.allDamageEvents.remove( eventIndex )
+	// Keep indexes stable for any fight recap that already captured this slot.
+	// The complete slot array is released by __DestroyStats at the round boundary.
+	file.allDamageEvents[ eventIndex ].isValid = false
 }
 
 void function RemoveDamageEvents( int attacker_handle, int victim_handle ) //Todo possibly a queue
@@ -2705,6 +2690,9 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 {
 	for( int eventIndex = file.allDamageEvents.len() - 1; eventIndex >= 0; --eventIndex )
 	{
+		if( !file.allDamageEvents[ eventIndex ].isValid )
+			continue
+
 		if( file.allDamageEvents[ eventIndex ].attackerHandle == playerHandle || file.allDamageEvents[ eventIndex ].victimHandle == playerHandle )
 			Tracker_RemoveDamageEventAtIndex( eventIndex )
 	}
@@ -2712,7 +2700,7 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 	array<string> invalidIdentifiers = []
 	foreach( string identifier, int eventIndex in file.allDamageEventsMap )
 	{
-		if( eventIndex < 0 || eventIndex >= file.allDamageEvents.len() )
+		if( eventIndex < 0 || eventIndex >= file.allDamageEvents.len() || !file.allDamageEvents[ eventIndex ].isValid )
 			invalidIdentifiers.append( identifier )
 	}
 
@@ -3074,9 +3062,10 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 		//////////////////////////// 			REMOVE Events			/////////////////////////
 		/////////////////////////////////////////////////////////////////////////////////////////
 
-		//queue events for deletion immediately so they are not reused in the next fight
+		// Retire events immediately so they are not reused in the next fight.
 		SDK_WriteRuntimeBreadcrumb( "tracker_endfight_cleanup", format( "fight=%d victim=%d attacker=%d damageMap=%d damageArr=%d", iFightID, victim_handle, attacker_handle, file.allDamageEventsMap.len(), file.allDamageEvents.len() ) )
 		RemoveDamageEvents( attacker_handle, victim_handle )
+		SDK_WriteRuntimeBreadcrumb( "tracker_endfight_cleanup_done", format( "fight=%d victim=%d attacker=%d damageMap=%d damageArr=%d", iFightID, victim_handle, attacker_handle, file.allDamageEventsMap.len(), file.allDamageEvents.len() ) )
 
 		/////////////////////////////////////////////////////////////////////////////////////////
 		//////////////////////////// 		attackers summary			/////////////////////////
@@ -3348,6 +3337,9 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 
 		for ( int i = file.allDamageEvents.len() - 1; i >= 0; --i )
 		{
+			if( !file.allDamageEvents[ i ].isValid )
+				continue
+
 			if ( file.gamemode_type_1v1 )
 			{
 				if ( file.allDamageEvents[i].attackerHandle == dead_victim_handle || file.allDamageEvents[i].attackerHandle == killer_attacker_handle )
@@ -3372,7 +3364,12 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 
 		#if DEVELOPER && DEBUGDMG
 			for( int eventIndex = 0; eventIndex < file.allDamageEvents.len(); ++eventIndex )
+			{
+				if( !file.allDamageEvents[ eventIndex ].isValid )
+					continue
+
 				sqprint( format( "Tracker: Remaining event handle: dealer: %d, reciever: %d ", file.allDamageEvents[ eventIndex ].attackerHandle, file.allDamageEvents[ eventIndex ].victimHandle ) )
+			}
 
 			sqprint( format( "Tracker: Total remaining events: %d, Total removed: %d", file.allDamageEvents.len(), removed ) )
 		#endif
@@ -3454,7 +3451,7 @@ bool function WeaponBypassesHits( int weaponSource )
 
 void function Tracker_HandleDamage( int eventIndex, entity attacker, int weaponSource, float damageAmount, var damageInfo, entity victim )
 {
-	if ( eventIndex < 0 || eventIndex >= file.allDamageEvents.len() || !IsValid( victim ) || !IsValid( attacker ) )
+	if ( eventIndex < 0 || eventIndex >= file.allDamageEvents.len() || !file.allDamageEvents[ eventIndex ].isValid || !IsValid( victim ) || !IsValid( attacker ) )
 		return
 
 	int previousHitCount = file.allDamageEvents[ eventIndex ].hitCount
@@ -3821,6 +3818,9 @@ DamageEvent function Tracker_GetCurrentEventByPlayerHandle_expensive( int player
 	{
 		for ( int i = dmgEventLen - 1; i >= 0; --i )
 		{
+			if( !file.allDamageEvents[ i ].isValid )
+				continue
+
 			if( attacker )
 			{
 				if ( file.allDamageEvents[i].attackerHandle == playerHandle )
