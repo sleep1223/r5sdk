@@ -1,0 +1,48 @@
+{
+  "apikey": "28e47bc1704cbf07f171bea95711dd45",
+  "identifier": "pwla_quanzhou_1v1",
+  "logfolder": "tracker_logs",
+  "webhooks": {
+    "PLAYERS_WEBHOOK": "",
+    "MATCHES_WEBHOOK": ""
+  },
+  "server": {
+    "MAX_LOGFILE_DIR_SIZE": "50",
+    "AUTO_DELETE_STATLOGS": "true",
+    "DELETE_ALL_LOGS": "true",
+    "CVAR_MAX_BUFFER": "50000",
+    "USE_WEB_SOCKETS": "true",
+    "LAX_SSL": "true",
+    "RELAY_CHAT_MESSAGES": "true",
+    "RECONNECT_ON_NEWGAME": "false",
+    "TRACKER_ENABLED": "true",
+    "TRACKER_ENCRYPTION": "true",
+    "TRACKER_SHIPSTATS": "true",
+    "USE_GLOBAL_STATS": "true",
+    "TRACKER_MAX_WAIT": "7.0",
+    "EA_VERIFY_SERVER": "false"
+  },
+  "settings": {
+    "ADMINS": "",
+    "ENABLE_CHATBOT": "true",
+    "CHATBOT_PREFIX": "SERVER",
+    "INTERVAL_MESSAGES": "start=Match stats by tracker @ www.r5r.dev|end=Match stats by tracker @ www.r5r.dev",
+    "LOOP_MESSAGES_INTERVAL": "60",
+    "LOOP_MESSAGES": "欢迎大家体验真8K的氦闪主板—氦闪8K，专为竞技而生，淘宝搜索氦闪零售店 | 专注练习，禁止利用掩体 & Practice only, no cover/peeking | 排行榜查看：R5.sleep0.de & Check rankings: R5.sleep0.de | 本服务器包含受击减速和抑制spam crouch机制",
+    "OPT_IN_GLOBAL_MUTE": "true"
+  },
+  "private": {
+    "RESTRICTED_SERVER": "false",
+    "RESTRICTED_WHITELIST_ONLY": "false",
+    "RESTRICTED_PLAYER_WHITELIST": "",
+    "RESTRICTED_JOIN_MESSAGE": "Welcome to the restricted server. \\n\\n You meet the minimum requirements to play on this server. Join message formatters can be used. See docs: interval-messages",
+    "RESTRICTED_WHITELIST_MESSAGE": "You are whitelisted to play on this restricted server.",
+    "RESTRICTED_ADMIN_MESSAGE": "You are an admin on this restricted server.",
+    "RESTRICTED_GAMESPLAYED": "10",
+    "RESTRICTED_PLAYTIME": "10000",
+    "RESTRICTED_RANK": "200",
+    "RESTRICTED_KILLS": "500",
+    "RESTRICTED_KD": "1.5",
+    "RESTRICTED_KICK_LOG": "false"
+  }
+}

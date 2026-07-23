@@ -470,9 +470,9 @@ playlists
 				//// Aim Assist																///////
 				///////////////////////////////////////////////////////////////////////////////////
 				
-				aimassist_adspull_disabled						0 // a.k.a. "Slowdown"
-				aimassist_magnet_pc							0.15 // a.k.a. "Rotational"
-				aimassist_magnet								0.15 // a.k.a. "Rotational" (console?)
+				aimassist_adspull_disabled						0	// a.k.a. "Slowdown"
+				aimassist_magnet_pc								0.2	// a.k.a. "Rotational"
+				aimassist_magnet								0.2	// a.k.a. "Rotational" (console?)
 				
 				
 
@@ -4138,7 +4138,7 @@ playlists
 				//		TOKENS FOR SERVER HOSTS		//
 				//////////////////////////////////////
 				
-				"MOTD_TEXT" "本服务器由L2714搭建，KOOK语音41289816 交流群732124612\n游玩本服务器默认同意以下游玩规则：\n1.1v1时不准逃跑、躲藏、利用掩体（包括换弹、peek、卡头皮位等）\n You are not allowed to run away/hide/use cover in any way in 1v1.\n2.请友善对待他人，善待萌新\n  Be polite to others\n3.引战者（输入设备、红绿大战等）直接踢\n No controversial topics/rage baiting. \n4.作弊永封\n Cheating will result in perma ban.\n5.滥用AD蹲动画将视情况处理。No spam crouch\n违反以上任意一条规则将会收到相应处罚，申诉请加群。\n致谢名单：\n感谢坩埚钳特大号的赞助，改手柄就找b站坩埚钳特大号" //set your servers message of the day. 1000 char max.  Use \n for newline.
+				"MOTD_TEXT" "本服务器由L2714搭建，KOOK语音41289816 交流群732124612\n游玩本服务器默认同意以下游玩规则：\n1v1 禁止逃跑、躲藏或利用掩体。\nNo running, hiding, or using cover in 1v1.\n2. 友善交流，善待萌新。\nBe respectful to others.\n3. 禁止引战，违者直接踢出。\nNo rage baiting or controversial topics.\n4. 作弊永久封禁。\nCheating results in a permanent ban." //set your servers message of the day. 1000 char max.  Use \n for newline.
 				"MOTD_TEXT_EXTENDED" "" // appends to first, 1000 char max.
 			
 				"BETA_BUILD_WATERMARK" "R5Reloaded - v2.6.41"
