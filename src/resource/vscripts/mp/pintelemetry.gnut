@@ -420,7 +420,6 @@ struct //Todo: move appropriate to tracker.var
 	bool bClientCommandAdminEnabled
 	bool bLiveMetricsOnlyForNonCombatMode
 	bool bUpdateIntervalThreadRunning
-	float lastDamageBreadcrumbTime
 
 	bool sg_counter_msg
 	float FS_MaxHealth
@@ -1560,9 +1559,6 @@ void function __DestroyStats()
 	file.bShouldShip = false
 	file.bStatsShipped = false
 
-	int previousHandleCount = file.HandleToPlayerData.len()
-	int previousPlayerDataCount = file.PlayerData.len()
-	int previousJumpCount = file.PlayerDidJump.len()
 	table< string, SettingsTable > previousPlayerData = file.PlayerData
 	table< string, bool > previousPlayerDidJump = file.PlayerDidJump
 
@@ -1575,7 +1571,6 @@ void function __DestroyStats()
 	file.HandleToPlayerData = {}
 	file.PlayerData = {}
 	file.PlayerDidJump = {}
-	file.lastDamageBreadcrumbTime = 0.0
 	Stats__ClearOutboundCache()
 
 	array<string> activeUIDs = []
@@ -1615,23 +1610,7 @@ void function __DestroyStats()
 		}
 	}
 
-	int removedStatsEntries = Stats__PrunePlayerStatsTables( activeUIDs )
-	SDK_WriteRuntimeBreadcrumb
-	(
-		"tracker_round_reset",
-		format
-		(
-			"active=%d stats_removed=%d handles=%d->%d pdata=%d->%d jumps=%d->%d",
-			activeUIDs.len(),
-			removedStatsEntries,
-			previousHandleCount,
-			file.HandleToPlayerData.len(),
-			previousPlayerDataCount,
-			file.PlayerData.len(),
-			previousJumpCount,
-			file.PlayerDidJump.len()
-		)
-	)
+	Stats__PrunePlayerStatsTables( activeUIDs )
 
 	foreach( callbackFunc in file.destroyStatCallbacks )
 		callbackFunc()
@@ -2740,6 +2719,9 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 
 	void function __EndFight( entity victim, entity attacker, int damageSourceID, float deathtime, string attackerLocation, string victimLocation )
 	{
+		if( Flowstate_IsFastInstaGib() )
+			WaitEndFrame() // All data this function needs may not be written by its coroutine yet.
+
 		if ( !IsValid( victim ) || ( !victim.IsPlayer() && !victim.IsNPC() ) || !IsValid( attacker ) )
 		{
 			#if DEVELOPER
@@ -2825,8 +2807,6 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 		}
 		else if ( attacker.IsNPC() )
 			attacker_handle = attacker.GetEncodedEHandle()
-
-		SDK_WriteRuntimeBreadcrumb( "tracker_endfight", format( "fight=%d victim=%d attacker=%d source=%d damageMap=%d damageArr=%d free=%d", iFightID, victim_handle, attacker_handle, damageSourceID, file.allDamageEventsMap.len(), file.allDamageEvents.len(), file.freeDamageEventIndexes.len() ) )
 
 		//statement header
 		string logString = "|#Fight Recap:{" + GetUnixTimestamp() + "}| Fight ID:{" + iFightID + "}| Victim: {" + victimUID + "};"
@@ -3228,7 +3208,7 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 		/////////////////////////////////////////////////////////////////////////////////////////
 
 
-            float fMatchTimeRemaining = Tracker_DecideTimeRemaining()
+            int iMatchTimeRemaining = Tracker_DecideTimeRemaining().tointeger()
             int iAliveTeams = GetNumTeamsRemaining() //ty ida
 
 			string attackerInput = ""
@@ -3297,7 +3277,7 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 			int iAttackerPing = pingAttacker.tointeger()
 			int iVictimPing = pingVictim.tointeger()
 			int iCurrentTimeStamp = GetUnixTimestamp()
-            logString += format( "\n^^,%s,1,%d,%d,%s,%d,%d,%i,%d,%s,%d,%d,%s,%s,%i,%i,%i,%s,%s\n&&,%s,%d,%s,%d,%d,%d,%i,%d,%s,%d,%d,%d,%s,%s,%i,%i,%i,%s,%s\n",
+            logString += format( "\n^^,%s,1,%d,%d,%s,%d,%d,%d,%d,%s,%d,%d,%s,%s,%d,%d,%d,%s,%s\n",
                 attackerPlayerID, 		//0
 				// 1 is string literal
                 iAliveTeams, 			//2
@@ -3305,7 +3285,7 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
                 victimPlayerID, 		//4
                 iAttackerTeam, 			//5
                 iVictimTeam, 			//6
-                fMatchTimeRemaining, 	//7
+                iMatchTimeRemaining, 	//7
                 iFightID, 				//8
 				attackerInput, 			//9
 				iAttackerPing, 			//10
@@ -3316,14 +3296,16 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 				iVictimScore,			//15
 				iChallengeCode,			//16
 				attackerLocation,		//17
-				victimLocation,			//18
+				victimLocation			//18
+            )
+            logString += format( "&&,%s,%d,%s,%d,%d,%d,%d,%d,%s,%d,%d,%d,%s,%s,%d,%d,%d,%s,%s\n",
                 victimPlayerID, 	//0
                 iAliveTeams, 		//1
                 attackerPlayerID, 	//2
                 iCurrentTimeStamp, 	//3
                 iAttackerTeam, 		//4
                 iVictimTeam, 		//5
-                fMatchTimeRemaining,//6
+                iMatchTimeRemaining,//6
                 iFightID, 			//7
 				attackerInput, 		//8
 				iVictimPing, 		//9
@@ -3347,24 +3329,6 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 				#endif
 			}
     }//EndFight()
-
-
-	void function __EndFightNextFrame( entity victim, entity attacker, int damageSourceID, float deathtime, string attackerLocation, string victimLocation )
-	{
-		WaitEndFrame() // Fast InstaGib writes data needed by __EndFight from another coroutine.
-		__EndFight( victim, attacker, damageSourceID, deathtime, attackerLocation, victimLocation )
-	}
-
-	void function __DispatchEndFight( entity victim, entity attacker, int damageSourceID, float deathtime, string attackerLocation, string victimLocation )
-	{
-		if( Flowstate_IsFastInstaGib() )
-		{
-			thread __EndFightNextFrame( victim, attacker, damageSourceID, deathtime, attackerLocation, victimLocation )
-			return
-		}
-
-		__EndFight( victim, attacker, damageSourceID, deathtime, attackerLocation, victimLocation )
-	}
 
 
 	void function RemoveEvents( int dead_victim_handle, int killer_attacker_handle, float fightEndTime )
@@ -3767,12 +3731,6 @@ void function Tracker_OnPlayerDamaged( entity victim, var damageInfo )
 
 	string damageEventKey = Tracker_GetDamageEventKey( attackerHandle, victimHandle )
 
-	if( actionTimestamp - file.lastDamageBreadcrumbTime >= 1.0 )
-	{
-		file.lastDamageBreadcrumbTime = actionTimestamp
-		SDK_WriteRuntimeBreadcrumb( "tracker_damage", format( "victim=%d attacker=%d source=%d damage=%.1f event=%s map=%d arr=%d free=%d", victimHandle, attackerHandle, weaponSource, damageAmount, damageEventKey, file.allDamageEventsMap.len(), file.allDamageEvents.len(), file.freeDamageEventIndexes.len() ) )
-	}
-
 	int existingEventIndex = Tracker_GetRecentDamageEventIndex( damageEventKey )
 
 	#if DEVELOPER && DEBUGDMG
@@ -4067,8 +4025,6 @@ int function InitializePlayerMetricsStructForPlayer( entity player, string playe
 	NewMetrics.previous_champion = false
 	NewMetrics.previous_score = 0
 	NewMetrics.isValid = true
-
-	SDK_WriteRuntimeBreadcrumb( "tracker_metrics_init", format( "uid=%s name=%s byID=%s len=%d", ID, name, byID ? "true" : "false", file.PlayerMetricsArray.len() ) )
 
 	file.PlayerMetricsArray.append( NewMetrics )
 	return PlayerMap_Insert( ID )
@@ -4499,8 +4455,6 @@ SerializedData function Tracker_BuildAllPlayerMetrics( bool trigger = false )
     string json = "["
 	bool firstPlayer = true
 	int metricsLen = file.PlayerMetricsArray.len()
-
-	SDK_WriteRuntimeBreadcrumb( "tracker_build_metrics", format( "trigger=%s metrics=%d damageMap=%d damageArr=%d free=%d", trigger ? "true" : "false", metricsLen, file.allDamageEventsMap.len(), file.allDamageEvents.len(), file.freeDamageEventIndexes.len() ) )
 
     for( int index = 0; index < metricsLen; index++ )
 	{
@@ -5487,7 +5441,7 @@ void function PIN_PlayerKilled( entity victim, entity attacker, var damageInfo )
 			return
 
 		int damageSourceID = DamageInfo_GetDamageSourceIdentifier( damageInfo )
-		__DispatchEndFight( victim, attacker, damageSourceID, Time(), StatPrintVector( attacker.GetOrigin() ), StatPrintVector( victim.GetOrigin() ) )
+		thread __EndFight( victim, attacker, damageSourceID, Time(), StatPrintVector( attacker.GetOrigin() ), StatPrintVector( victim.GetOrigin() ) )
 	}
 }
 
@@ -5506,7 +5460,7 @@ void function Tracker_EndFight( entity victim, entity attacker, var damageInfo )
 		return
 
 	int damageSourceID = DamageInfo_GetDamageSourceIdentifier( damageInfo )
-	__DispatchEndFight( victim, attacker, damageSourceID, Time(), StatPrintVector( attacker.GetOrigin() ), StatPrintVector( victim.GetOrigin() ) )
+	thread __EndFight( victim, attacker, damageSourceID, Time(), StatPrintVector( attacker.GetOrigin() ), StatPrintVector( victim.GetOrigin() ) )
 }
 
 void function PIN_PlanePath( vector startPos, vector endPos, float duration )
