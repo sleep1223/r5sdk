@@ -391,6 +391,7 @@ struct //Todo: move appropriate to tracker.var
 	array< string > requestedStatsArray
 	array< PlayerMetrics > PlayerMetricsArray
 	array< DamageEvent > allDamageEvents
+	array< int > freeDamageEventIndexes
 	table< string, int > allDamageEventsMap
 
 	bool _registerAllSettings
@@ -1567,6 +1568,7 @@ void function __DestroyStats()
 
 	file.allDamageEventsMap = {}
 	file.allDamageEvents = []
+	file.freeDamageEventIndexes = []
 	file.PlayerMetricsArray = []
 	file.playerVerifyCounts = []
 	file.PlayerIdMap = {}
@@ -2623,29 +2625,53 @@ void function RecapStats(entity player, float damage, float hits, float shots, s
 
 
 
+void function Tracker_InitializeDamageEventAtIndex( int eventIndex, int weaponSource, float damage, float actionTimestamp, float shotIdentifier, int attackerHandle, int victimHandle )
+{
+	if( eventIndex < 0 || eventIndex >= file.allDamageEvents.len() )
+		return
+
+	file.allDamageEvents[ eventIndex ].isValid = false
+	file.allDamageEvents[ eventIndex ].isNew = true
+	file.allDamageEvents[ eventIndex ].attackerHandle = attackerHandle
+	file.allDamageEvents[ eventIndex ].victimHandle = victimHandle
+	file.allDamageEvents[ eventIndex ].weaponSource = weaponSource
+	file.allDamageEvents[ eventIndex ].damage = damage
+	file.allDamageEvents[ eventIndex ].hitCount = 0
+	file.allDamageEvents[ eventIndex ].bulletsHit = 0.0
+	file.allDamageEvents[ eventIndex ].headshots = 0
+	file.allDamageEvents[ eventIndex ].actionTimestamp = actionTimestamp - 0.0900
+	file.allDamageEvents[ eventIndex ].lastWeaponSource = weaponSource
+	file.allDamageEvents[ eventIndex ].lastHitTimestamp = 0.0
+	file.allDamageEvents[ eventIndex ].shotIdentifier = shotIdentifier
+	file.allDamageEvents[ eventIndex ].isValid = true
+}
+
 int function Tracker_CreateDamageEvent( int weaponSource, float damage, float actionTimestamp, float shotIdentifier, int attackerHandle, int victimHandle )
 {
 	#if DEVELOPER && DEBUGDMG
 		printw( "Tracker_CreateDamageEvent: attackerHandle:", attackerHandle, "victimHandle:", victimHandle )
 	#endif
 
-    DamageEvent event
-	event.isNew = true //bool
-	event.attackerHandle = attackerHandle //players ehandle (for comparison logic) - int
-	event.victimHandle = victimHandle //int
-    event.weaponSource = weaponSource // int
-    event.damage = damage //float
-    event.hitCount = 0 //int
-    event.bulletsHit = 0.0 //float
-	event.headshots = 0 //int
-	event.actionTimestamp = ( actionTimestamp - .0900 ) //float
-	event.lastWeaponSource = weaponSource //int
-	event.lastHitTimestamp = 0 //float
-	event.shotIdentifier = shotIdentifier //int
-	event.isValid = true
+	int eventIndex = -1
+	while( file.freeDamageEventIndexes.len() > 0 )
+	{
+		int freeEventIndex = file.freeDamageEventIndexes.pop()
+		if( freeEventIndex >= 0 && freeEventIndex < file.allDamageEvents.len() && !file.allDamageEvents[ freeEventIndex ].isValid )
+		{
+			eventIndex = freeEventIndex
+			break
+		}
+	}
 
-	file.allDamageEvents.append( event )
-	return file.allDamageEvents.len() - 1
+	if( eventIndex == -1 )
+	{
+		DamageEvent event
+		file.allDamageEvents.append( event )
+		eventIndex = file.allDamageEvents.len() - 1
+	}
+
+	Tracker_InitializeDamageEventAtIndex( eventIndex, weaponSource, damage, actionTimestamp, shotIdentifier, attackerHandle, victimHandle )
+	return eventIndex
 }
 
 void function Tracker_StoreDamageEvent( string identifier, int eventIndex )
@@ -2672,8 +2698,9 @@ void function Tracker_RemoveDamageEventAtIndex( int eventIndex )
 		delete file.allDamageEventsMap[ identifier ]
 
 	// Keep indexes stable for any fight recap that already captured this slot.
-	// The complete slot array is released by __DestroyStats at the round boundary.
+	// Reuse the slot for a later event instead of growing tombstones for the rest of the round.
 	file.allDamageEvents[ eventIndex ].isValid = false
+	file.freeDamageEventIndexes.append( eventIndex )
 }
 
 void function RemoveDamageEvents( int attacker_handle, int victim_handle ) //Todo possibly a queue
@@ -2713,9 +2740,6 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 
 	void function __EndFight( entity victim, entity attacker, int damageSourceID, float deathtime, string attackerLocation, string victimLocation )
 	{
-		if( Flowstate_IsFastInstaGib() )
-			WaitEndFrame() //all data this function needs may not be wrote by it's coroutine yet.
-
 		if ( !IsValid( victim ) || ( !victim.IsPlayer() && !victim.IsNPC() ) || !IsValid( attacker ) )
 		{
 			#if DEVELOPER
@@ -2802,7 +2826,7 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 		else if ( attacker.IsNPC() )
 			attacker_handle = attacker.GetEncodedEHandle()
 
-		SDK_WriteRuntimeBreadcrumb( "tracker_endfight", format( "fight=%d victim=%d attacker=%d source=%d damageMap=%d damageArr=%d", iFightID, victim_handle, attacker_handle, damageSourceID, file.allDamageEventsMap.len(), file.allDamageEvents.len() ) )
+		SDK_WriteRuntimeBreadcrumb( "tracker_endfight", format( "fight=%d victim=%d attacker=%d source=%d damageMap=%d damageArr=%d free=%d", iFightID, victim_handle, attacker_handle, damageSourceID, file.allDamageEventsMap.len(), file.allDamageEvents.len(), file.freeDamageEventIndexes.len() ) )
 
 		//statement header
 		string logString = "|#Fight Recap:{" + GetUnixTimestamp() + "}| Fight ID:{" + iFightID + "}| Victim: {" + victimUID + "};"
@@ -3063,9 +3087,7 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 		/////////////////////////////////////////////////////////////////////////////////////////
 
 		// Retire events immediately so they are not reused in the next fight.
-		SDK_WriteRuntimeBreadcrumb( "tracker_endfight_cleanup", format( "fight=%d victim=%d attacker=%d damageMap=%d damageArr=%d", iFightID, victim_handle, attacker_handle, file.allDamageEventsMap.len(), file.allDamageEvents.len() ) )
 		RemoveDamageEvents( attacker_handle, victim_handle )
-		SDK_WriteRuntimeBreadcrumb( "tracker_endfight_cleanup_done", format( "fight=%d victim=%d attacker=%d damageMap=%d damageArr=%d", iFightID, victim_handle, attacker_handle, file.allDamageEventsMap.len(), file.allDamageEvents.len() ) )
 
 		/////////////////////////////////////////////////////////////////////////////////////////
 		//////////////////////////// 		attackers summary			/////////////////////////
@@ -3325,6 +3347,24 @@ void function RemoveDamageEventsForPlayerHandle( int playerHandle )
 				#endif
 			}
     }//EndFight()
+
+
+	void function __EndFightNextFrame( entity victim, entity attacker, int damageSourceID, float deathtime, string attackerLocation, string victimLocation )
+	{
+		WaitEndFrame() // Fast InstaGib writes data needed by __EndFight from another coroutine.
+		__EndFight( victim, attacker, damageSourceID, deathtime, attackerLocation, victimLocation )
+	}
+
+	void function __DispatchEndFight( entity victim, entity attacker, int damageSourceID, float deathtime, string attackerLocation, string victimLocation )
+	{
+		if( Flowstate_IsFastInstaGib() )
+		{
+			thread __EndFightNextFrame( victim, attacker, damageSourceID, deathtime, attackerLocation, victimLocation )
+			return
+		}
+
+		__EndFight( victim, attacker, damageSourceID, deathtime, attackerLocation, victimLocation )
+	}
 
 
 	void function RemoveEvents( int dead_victim_handle, int killer_attacker_handle, float fightEndTime )
@@ -3730,7 +3770,7 @@ void function Tracker_OnPlayerDamaged( entity victim, var damageInfo )
 	if( actionTimestamp - file.lastDamageBreadcrumbTime >= 1.0 )
 	{
 		file.lastDamageBreadcrumbTime = actionTimestamp
-		SDK_WriteRuntimeBreadcrumb( "tracker_damage", format( "victim=%d attacker=%d source=%d damage=%.1f event=%s map=%d arr=%d", victimHandle, attackerHandle, weaponSource, damageAmount, damageEventKey, file.allDamageEventsMap.len(), file.allDamageEvents.len() ) )
+		SDK_WriteRuntimeBreadcrumb( "tracker_damage", format( "victim=%d attacker=%d source=%d damage=%.1f event=%s map=%d arr=%d free=%d", victimHandle, attackerHandle, weaponSource, damageAmount, damageEventKey, file.allDamageEventsMap.len(), file.allDamageEvents.len(), file.freeDamageEventIndexes.len() ) )
 	}
 
 	int existingEventIndex = Tracker_GetRecentDamageEventIndex( damageEventKey )
@@ -4460,7 +4500,7 @@ SerializedData function Tracker_BuildAllPlayerMetrics( bool trigger = false )
 	bool firstPlayer = true
 	int metricsLen = file.PlayerMetricsArray.len()
 
-	SDK_WriteRuntimeBreadcrumb( "tracker_build_metrics", format( "trigger=%s metrics=%d damageMap=%d damageArr=%d", trigger ? "true" : "false", metricsLen, file.allDamageEventsMap.len(), file.allDamageEvents.len() ) )
+	SDK_WriteRuntimeBreadcrumb( "tracker_build_metrics", format( "trigger=%s metrics=%d damageMap=%d damageArr=%d free=%d", trigger ? "true" : "false", metricsLen, file.allDamageEventsMap.len(), file.allDamageEvents.len(), file.freeDamageEventIndexes.len() ) )
 
     for( int index = 0; index < metricsLen; index++ )
 	{
@@ -5447,7 +5487,7 @@ void function PIN_PlayerKilled( entity victim, entity attacker, var damageInfo )
 			return
 
 		int damageSourceID = DamageInfo_GetDamageSourceIdentifier( damageInfo )
-		thread __EndFight( victim, attacker, damageSourceID, Time(), StatPrintVector( attacker.GetOrigin() ), StatPrintVector( victim.GetOrigin() ) )
+		__DispatchEndFight( victim, attacker, damageSourceID, Time(), StatPrintVector( attacker.GetOrigin() ), StatPrintVector( victim.GetOrigin() ) )
 	}
 }
 
@@ -5466,7 +5506,7 @@ void function Tracker_EndFight( entity victim, entity attacker, var damageInfo )
 		return
 
 	int damageSourceID = DamageInfo_GetDamageSourceIdentifier( damageInfo )
-	thread __EndFight( victim, attacker, damageSourceID, Time(), StatPrintVector( attacker.GetOrigin() ), StatPrintVector( victim.GetOrigin() ) )
+	__DispatchEndFight( victim, attacker, damageSourceID, Time(), StatPrintVector( attacker.GetOrigin() ), StatPrintVector( victim.GetOrigin() ) )
 }
 
 void function PIN_PlanePath( vector startPos, vector endPos, float duration )
