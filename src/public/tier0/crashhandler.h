@@ -61,6 +61,7 @@ public:
 	void FormatCrash();
 	void FormatCallstack();
 	void FormatRegisters();
+	void FormatExceptionMemory();
 	void FormatModules();
 	void FormatSystemInfo();
 	void FormatBuildInfo();
@@ -92,6 +93,7 @@ private:
 
 	void FormatALU(const char* const pszRegister, const DWORD64 nContent);
 	void FormatFPU(const char* const pszRegister, const M128A* const pxContent);
+	void FormatMemoryBlock(const char* const pszName, const DWORD64 nAddress, const SIZE_T nSize);
 
 	bool IsPageAccessible() const;
 
@@ -118,10 +120,10 @@ private:
 
 	EXCEPTION_POINTERS* m_pExceptionPointers;
 
-	// 32KiB buffer containing the entire crash log, static as we shouldn't
+	// 64KiB buffer containing the entire crash log, static as we shouldn't
 	// allocate any dynamic memory when writing the log files as that is
 	// unsafe during a crash.
-	CFmtStrQuietTruncationN<32768> m_Buffer;
+	CFmtStrQuietTruncationN<65536> m_Buffer;
 
 	// Buffer containing the module name we crashed in.
 	CFmtStrQuietTruncationN<256> m_CrashingModule;

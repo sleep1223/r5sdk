@@ -92,11 +92,11 @@ static void CrashHandler_WriteTextFile(const char* const pszPath, const char* co
 	CloseHandle(hTxtFile);
 }
 
-static void CrashHandler_WriteMiniDumpFile(const char* const pszPath, EXCEPTION_POINTERS* const pExceptionPointers)
+static bool CrashHandler_WriteMiniDumpFile(const char* const pszPath, EXCEPTION_POINTERS* const pExceptionPointers)
 {
 	const HANDLE hDmpFile = CreateFileA(pszPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 	if (hDmpFile == INVALID_HANDLE_VALUE)
-		return;
+		return false;
 
 	MINIDUMP_EXCEPTION_INFORMATION dumpExceptionInfo;
 	dumpExceptionInfo.ThreadId = GetCurrentThreadId();
@@ -105,19 +105,27 @@ static void CrashHandler_WriteMiniDumpFile(const char* const pszPath, EXCEPTION_
 
 	const MINIDUMP_TYPE dumpType = static_cast<MINIDUMP_TYPE>(
 		MiniDumpNormal |
+		MiniDumpWithFullMemory |
 		MiniDumpWithDataSegs |
 		MiniDumpWithHandleData |
 		MiniDumpWithProcessThreadData |
+		MiniDumpWithFullMemoryInfo |
 		MiniDumpWithThreadInfo |
-		MiniDumpWithUnloadedModules);
+		MiniDumpWithUnloadedModules |
+		MiniDumpIgnoreInaccessibleMemory);
 
-	MiniDumpWriteDump(
+	const BOOL bWroteDump = MiniDumpWriteDump(
 		GetCurrentProcess(),
 		GetCurrentProcessId(),
 		hDmpFile, dumpType,
 		&dumpExceptionInfo, nullptr, nullptr);
 
 	CloseHandle(hDmpFile);
+
+	if (!bWroteDump)
+		DeleteFileA(pszPath);
+
+	return bWroteDump == TRUE;
 }
 
 //-----------------------------------------------------------------------------
@@ -230,6 +238,120 @@ void CCrashHandler::FormatRegisters()
 	FormatFPU("xmm13", &pContextRecord->Xmm13);
 	FormatFPU("xmm14", &pContextRecord->Xmm14);
 	FormatFPU("xmm15", &pContextRecord->Xmm15);
+
+	m_Buffer.Append("}\n");
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: formats memory needed to reconstruct the active Squirrel VM frame
+//-----------------------------------------------------------------------------
+void CCrashHandler::FormatExceptionMemory()
+{
+	m_Buffer.Append("exception_memory:\n{\n");
+
+	if (!m_pExceptionPointers || !m_pExceptionPointers->ContextRecord)
+	{
+		m_Buffer.Append("\t<no exception context>\n");
+		m_Buffer.Append("}\n");
+		return;
+	}
+
+	const PCONTEXT pContext = m_pExceptionPointers->ContextRecord;
+	FormatMemoryBlock("exception_stack", pContext->Rsp, 0x200);
+
+	const DWORD64 nGameBase = reinterpret_cast<DWORD64>(GetModuleHandleA(nullptr));
+	const DWORD64 nCrashRva = nGameBase && pContext->Rip >= nGameBase ? pContext->Rip - nGameBase : 0;
+	m_Buffer.AppendFormat("\tgame_rva: 0x%llX\n", nCrashRva);
+
+	// These offsets describe the SQObjectPtr assignment used by the Squirrel
+	// interpreter. Other crashes still get the exception stack above.
+	if (nCrashRva < 0xB1D2D0 || nCrashRva >= 0xB1D320)
+	{
+		m_Buffer.Append("\tsqvm_targeted: false\n");
+		m_Buffer.Append("}\n");
+		return;
+	}
+
+	m_Buffer.Append("\tsqvm_targeted: true\n");
+
+	const DWORD64 nInstructionWindow = pContext->R14 >= 0x40 ? pContext->R14 - 0x40 : pContext->R14;
+	const DWORD64 nDestinationWindow = pContext->Rcx >= 0x40 ? pContext->Rcx - 0x40 : pContext->Rcx;
+	const DWORD64 nSourceWindow = pContext->Rdx >= 0x40 ? pContext->Rdx - 0x40 : pContext->Rdx;
+
+	FormatMemoryBlock("sqvm", pContext->Rsi, 0x180);
+	FormatMemoryBlock("current_instruction", nInstructionWindow, 0x100);
+	FormatMemoryBlock("destination_object", nDestinationWindow, 0x80);
+	FormatMemoryBlock("source_object", nSourceWindow, 0x80);
+
+	DWORD64 nInstructionState = 0;
+	DWORD64 nLiteralBase = 0;
+	DWORD64 nStackBase = 0;
+	SIZE_T nBytesRead = 0;
+
+	if (pContext->Rsi &&
+		ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(pContext->Rsi + 0x40),
+			&nInstructionState, sizeof(nInstructionState), &nBytesRead) &&
+		nBytesRead == sizeof(nInstructionState))
+	{
+		FormatMemoryBlock("sqvm_instruction_state", nInstructionState, 0x80);
+
+		DWORD64 nInstructionStateValues[2] = {};
+
+		if (ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(nInstructionState),
+			nInstructionStateValues, sizeof(nInstructionStateValues), &nBytesRead) &&
+			nBytesRead == sizeof(nInstructionStateValues))
+		{
+			const DWORD64 nInstruction = nInstructionStateValues[0];
+			nLiteralBase = nInstructionStateValues[1];
+			const DWORD64 nInstructionCursor = nInstruction >= 0x40 ? nInstruction - 0x40 : nInstruction;
+
+			FormatMemoryBlock("sqvm_instruction_cursor", nInstructionCursor, 0x100);
+			FormatMemoryBlock("sqvm_literal_base", nLiteralBase, 0x200);
+		}
+	}
+
+	if (pContext->Rsi &&
+		ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(pContext->Rsi + 0x58),
+			&nStackBase, sizeof(nStackBase), &nBytesRead) &&
+		nBytesRead == sizeof(nStackBase))
+	{
+		FormatMemoryBlock("sqvm_stack_base", nStackBase, 0x200);
+	}
+
+	LONG instructionFields[4] = {};
+	if (ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(pContext->R14),
+		instructionFields, sizeof(instructionFields), &nBytesRead) &&
+		nBytesRead == sizeof(instructionFields))
+	{
+		m_Buffer.AppendFormat(
+			"\tinstruction: op=%d source_index=%d destination_index=%d arg3=%d\n",
+			instructionFields[0],
+			instructionFields[1],
+			instructionFields[2],
+			instructionFields[3]);
+
+		if (nLiteralBase)
+		{
+			const DWORD64 nComputedSource = static_cast<DWORD64>(
+				static_cast<LONGLONG>(nLiteralBase) + static_cast<LONGLONG>(instructionFields[1]) * 0x10);
+			m_Buffer.AppendFormat(
+				"\tcomputed_source: 0x%016llX register_rdx=0x%016llX match=%s\n",
+				nComputedSource,
+				pContext->Rdx,
+				nComputedSource == pContext->Rdx ? "true" : "false");
+		}
+
+		if (nStackBase)
+		{
+			const DWORD64 nComputedDestination = static_cast<DWORD64>(
+				static_cast<LONGLONG>(nStackBase) + static_cast<LONGLONG>(instructionFields[2]) * 0x10);
+			m_Buffer.AppendFormat(
+				"\tcomputed_destination: 0x%016llX register_rcx=0x%016llX match=%s\n",
+				nComputedDestination,
+				pContext->Rcx,
+				nComputedDestination == pContext->Rcx ? "true" : "false");
+		}
+	}
 
 	m_Buffer.Append("}\n");
 }
@@ -565,6 +687,66 @@ void CCrashHandler::FormatFPU(const char* const pszRegister, const M128A* const 
 }
 
 //-----------------------------------------------------------------------------
+// Purpose: safely formats a memory region without dereferencing crash pointers
+//-----------------------------------------------------------------------------
+void CCrashHandler::FormatMemoryBlock(const char* const pszName, const DWORD64 nAddress, const SIZE_T nSize)
+{
+	m_Buffer.AppendFormat("\t%s:\n\t{\n\t\taddress: 0x%016llX\n", pszName, nAddress);
+
+	if (!nAddress || !nSize)
+	{
+		m_Buffer.Append("\t\tstatus: unavailable\n\t}\n");
+		return;
+	}
+
+	MEMORY_BASIC_INFORMATION memoryInfo = {};
+	const SIZE_T nQuerySize = VirtualQuery(reinterpret_cast<LPCVOID>(nAddress), &memoryInfo, sizeof(memoryInfo));
+	if (nQuerySize == sizeof(memoryInfo))
+	{
+		m_Buffer.AppendFormat(
+			"\t\tregion: base=0x%016llX size=0x%llX state=0x%X protect=0x%X type=0x%X\n",
+			reinterpret_cast<DWORD64>(memoryInfo.BaseAddress),
+			static_cast<unsigned long long>(memoryInfo.RegionSize),
+			memoryInfo.State,
+			memoryInfo.Protect,
+			memoryInfo.Type);
+	}
+
+	BYTE memory[0x200] = {};
+	const SIZE_T nRequestedSize = nSize < sizeof(memory) ? nSize : sizeof(memory);
+	SIZE_T nBytesRead = 0;
+	const BOOL bRead = ReadProcessMemory(
+		GetCurrentProcess(),
+		reinterpret_cast<LPCVOID>(nAddress),
+		memory,
+		nRequestedSize,
+		&nBytesRead);
+
+	m_Buffer.AppendFormat("\t\tread: %s bytes=0x%llX error=%lu\n",
+		bRead ? "ok" : "failed",
+		static_cast<unsigned long long>(nBytesRead),
+		bRead ? ERROR_SUCCESS : GetLastError());
+
+	for (SIZE_T nOffset = 0; nOffset < nBytesRead; nOffset += 0x20)
+	{
+		m_Buffer.AppendFormat("\t\t0x%016llX:", nAddress + nOffset);
+
+		for (SIZE_T nColumn = 0; nColumn < 0x20 && nOffset + nColumn < nBytesRead; nColumn += sizeof(DWORD64))
+		{
+			DWORD64 nValue = 0;
+			const SIZE_T nRemaining = nBytesRead - (nOffset + nColumn);
+			const SIZE_T nCopySize = nRemaining < sizeof(nValue) ? nRemaining : sizeof(nValue);
+			memcpy(&nValue, &memory[nOffset + nColumn], nCopySize);
+			m_Buffer.AppendFormat(" %016llX", nValue);
+		}
+
+		m_Buffer.Append("\n");
+	}
+
+	m_Buffer.Append("\t}\n");
+}
+
+//-----------------------------------------------------------------------------
 // Purpose: returns the current exception code as string
 // Output : exception code, "UNKNOWN_EXCEPTION" if exception code doesn't exist in this context
 //-----------------------------------------------------------------------------
@@ -696,8 +878,18 @@ void CCrashHandler::WriteFile()
 
 	CrashHandler_WriteTextFile(stampedCrashText.String(), m_Buffer.String(), (DWORD)m_Buffer.Length());
 	CrashHandler_WriteTextFile(latestCrashText.String(), m_Buffer.String(), (DWORD)m_Buffer.Length());
-	CrashHandler_WriteMiniDumpFile(stampedMiniDump.String(), m_pExceptionPointers);
-	CrashHandler_WriteMiniDumpFile(latestMiniDump.String(), m_pExceptionPointers);
+
+	if (CrashHandler_WriteMiniDumpFile(stampedMiniDump.String(), m_pExceptionPointers))
+	{
+		DeleteFileA(latestMiniDump.String());
+		if (!CreateHardLinkA(latestMiniDump.String(), stampedMiniDump.String(), nullptr))
+		{
+			MoveFileExA(
+				stampedMiniDump.String(),
+				latestMiniDump.String(),
+				MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+		}
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -787,6 +979,7 @@ long __stdcall BottomLevelExceptionFilter(EXCEPTION_POINTERS* const pExceptionIn
 	g_CrashHandler.FormatCrash();
 	g_CrashHandler.FormatCallstack();
 	g_CrashHandler.FormatRegisters();
+	g_CrashHandler.FormatExceptionMemory();
 	g_CrashHandler.FormatModules();
 	g_CrashHandler.FormatSystemInfo();
 	g_CrashHandler.FormatBuildInfo();
