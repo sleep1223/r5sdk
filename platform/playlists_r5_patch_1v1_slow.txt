@@ -470,7 +470,7 @@ playlists
 				//// Aim Assist																///////
 				///////////////////////////////////////////////////////////////////////////////////
 				
-				aimassist_adspull_disabled						0	// a.k.a. "Slowdown"
+				aimassist_adspull_disabled						1	// a.k.a. "Slowdown"
 				aimassist_magnet_pc								0.2	// a.k.a. "Rotational"
 				aimassist_magnet								0.2	// a.k.a. "Rotational" (console?)
 				
