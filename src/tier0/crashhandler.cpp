@@ -71,17 +71,6 @@ static void CrashHandler_EnsureDirectoryExists(const char* const pszDirectory)
 	CreateDirectoryA(szDirectory, nullptr);
 }
 
-static void CrashHandler_FormatTimestamp(char* const pszBuffer, const size_t nBufferSize)
-{
-	SYSTEMTIME st;
-	GetLocalTime(&st);
-
-	snprintf(pszBuffer, nBufferSize, "%04u%02u%02u_%02u%02u%02u_%03u_%lu_%lu",
-		st.wYear, st.wMonth, st.wDay,
-		st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
-		GetCurrentProcessId(), GetCurrentThreadId());
-}
-
 static void CrashHandler_WriteTextFile(const char* const pszPath, const char* const pszText, const DWORD nTextLength)
 {
 	const HANDLE hTxtFile = CreateFileA(pszPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -90,6 +79,43 @@ static void CrashHandler_WriteTextFile(const char* const pszPath, const char* co
 
 	::WriteFile(hTxtFile, pszText, nTextLength, nullptr, nullptr);
 	CloseHandle(hTxtFile);
+}
+
+static bool CrashHandler_ReadMemory(const DWORD64 nAddress, void* const pBuffer, const SIZE_T nSize)
+{
+	SIZE_T nBytesRead = 0;
+	return nAddress &&
+		ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(nAddress), pBuffer, nSize, &nBytesRead) &&
+		nBytesRead == nSize;
+}
+
+static bool CrashHandler_ReadSQString(const DWORD64 nStringObject, char* const pszBuffer, const SIZE_T nBufferSize)
+{
+	if (!pszBuffer || nBufferSize < 2)
+		return false;
+
+	pszBuffer[0] = '\0';
+
+	SIZE_T nBytesRead = 0;
+	if (!nStringObject ||
+		!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(nStringObject + 0x40),
+			pszBuffer, nBufferSize - 1, &nBytesRead) ||
+		nBytesRead == 0)
+	{
+		return false;
+	}
+
+	const SIZE_T nEnd = nBytesRead < nBufferSize ? nBytesRead : nBufferSize - 1;
+	pszBuffer[nEnd] = '\0';
+
+	for (SIZE_T i = 0; i < nEnd && pszBuffer[i]; ++i)
+	{
+		const unsigned char ch = static_cast<unsigned char>(pszBuffer[i]);
+		if (ch < 0x20 || ch > 0x7E)
+			pszBuffer[i] = '?';
+	}
+
+	return true;
 }
 
 static bool CrashHandler_WriteMiniDumpFile(const char* const pszPath, EXCEPTION_POINTERS* const pExceptionPointers)
@@ -105,11 +131,9 @@ static bool CrashHandler_WriteMiniDumpFile(const char* const pszPath, EXCEPTION_
 
 	const MINIDUMP_TYPE dumpType = static_cast<MINIDUMP_TYPE>(
 		MiniDumpNormal |
-		MiniDumpWithFullMemory |
 		MiniDumpWithDataSegs |
 		MiniDumpWithHandleData |
 		MiniDumpWithProcessThreadData |
-		MiniDumpWithFullMemoryInfo |
 		MiniDumpWithThreadInfo |
 		MiniDumpWithUnloadedModules |
 		MiniDumpIgnoreInaccessibleMemory);
@@ -310,6 +334,41 @@ void CCrashHandler::FormatExceptionMemory()
 		}
 	}
 
+	struct SQObjectSnapshot
+	{
+		DWORD64 nType;
+		DWORD64 nValue;
+	};
+
+	SQObjectSnapshot closureObject = {};
+	SQObjectSnapshot functionProtoObject = {};
+	SQObjectSnapshot sourceNameObject = {};
+	SQObjectSnapshot functionNameObject = {};
+
+	if (nInstructionState &&
+		CrashHandler_ReadMemory(nInstructionState + 0x10, &closureObject, sizeof(closureObject)) &&
+		closureObject.nType == 0x08000100 &&
+		CrashHandler_ReadMemory(closureObject.nValue + 0x50, &functionProtoObject, sizeof(functionProtoObject)) &&
+		functionProtoObject.nType == 0x08002000)
+	{
+		CrashHandler_ReadMemory(functionProtoObject.nValue + 0x48, &sourceNameObject, sizeof(sourceNameObject));
+		CrashHandler_ReadMemory(functionProtoObject.nValue + 0x58, &functionNameObject, sizeof(functionNameObject));
+
+		char szSourceName[260] = {};
+		char szFunctionName[260] = {};
+		const bool bHasSourceName = sourceNameObject.nType == 0x08000010 &&
+			CrashHandler_ReadSQString(sourceNameObject.nValue, szSourceName, sizeof(szSourceName));
+		const bool bHasFunctionName = functionNameObject.nType == 0x08000010 &&
+			CrashHandler_ReadSQString(functionNameObject.nValue, szFunctionName, sizeof(szFunctionName));
+
+		m_Buffer.AppendFormat(
+			"\tscript_frame: source='%s' function='%s' closure=0x%016llX funcproto=0x%016llX\n",
+			bHasSourceName ? szSourceName : "<unavailable>",
+			bHasFunctionName ? szFunctionName : "<unavailable>",
+			closureObject.nValue,
+			functionProtoObject.nValue);
+	}
+
 	if (pContext->Rsi &&
 		ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(pContext->Rsi + 0x58),
 			&nStackBase, sizeof(nStackBase), &nBytesRead) &&
@@ -334,11 +393,34 @@ void CCrashHandler::FormatExceptionMemory()
 		{
 			const DWORD64 nComputedSource = static_cast<DWORD64>(
 				static_cast<LONGLONG>(nLiteralBase) + static_cast<LONGLONG>(instructionFields[1]) * 0x10);
+			const DWORD64 nFaultSourceBase = static_cast<DWORD64>(
+				static_cast<LONGLONG>(pContext->Rdx) - static_cast<LONGLONG>(instructionFields[1]) * 0x10);
 			m_Buffer.AppendFormat(
-				"\tcomputed_source: 0x%016llX register_rdx=0x%016llX match=%s\n",
+				"\tcomputed_source: 0x%016llX register_rdx=0x%016llX match=%s fault_source_base=0x%016llX observed_literal_base=0x%016llX\n",
 				nComputedSource,
 				pContext->Rdx,
-				nComputedSource == pContext->Rdx ? "true" : "false");
+				nComputedSource == pContext->Rdx ? "true" : "false",
+				nFaultSourceBase,
+				nLiteralBase);
+
+			SQObjectSnapshot literalObject = {};
+			if (CrashHandler_ReadMemory(nComputedSource, &literalObject, sizeof(literalObject)))
+			{
+				m_Buffer.AppendFormat(
+					"\tliteral_object: index=%d type=0x%08llX value=0x%016llX",
+					instructionFields[1],
+					literalObject.nType,
+					literalObject.nValue);
+
+				char szLiteral[260] = {};
+				if (literalObject.nType == 0x08000010 &&
+					CrashHandler_ReadSQString(literalObject.nValue, szLiteral, sizeof(szLiteral)))
+				{
+					m_Buffer.AppendFormat(" string='%s'", szLiteral);
+				}
+
+				m_Buffer.Append("\n");
+			}
 		}
 
 		if (nStackBase)
@@ -863,33 +945,14 @@ void CCrashHandler::WriteFile()
 
 	CrashHandler_EnsureDirectoryExists(pszLogDirectory);
 
-	char szTimestamp[64];
-	CrashHandler_FormatTimestamp(szTimestamp, sizeof(szTimestamp));
-
 	CFmtStrQuietTruncationN<MAX_PATH> latestCrashText;
-	CFmtStrQuietTruncationN<MAX_PATH> stampedCrashText;
 	CFmtStrQuietTruncationN<MAX_PATH> latestMiniDump;
-	CFmtStrQuietTruncationN<MAX_PATH> stampedMiniDump;
 
 	latestCrashText.Format("%s/%s.txt", pszLogDirectory, "apex_crash");
-	stampedCrashText.Format("%s/%s_%s.txt", pszLogDirectory, "apex_crash", szTimestamp);
 	latestMiniDump.Format("%s/%s.dmp", pszLogDirectory, "minidump");
-	stampedMiniDump.Format("%s/%s_%s.dmp", pszLogDirectory, "minidump", szTimestamp);
 
-	CrashHandler_WriteTextFile(stampedCrashText.String(), m_Buffer.String(), (DWORD)m_Buffer.Length());
 	CrashHandler_WriteTextFile(latestCrashText.String(), m_Buffer.String(), (DWORD)m_Buffer.Length());
-
-	if (CrashHandler_WriteMiniDumpFile(stampedMiniDump.String(), m_pExceptionPointers))
-	{
-		DeleteFileA(latestMiniDump.String());
-		if (!CreateHardLinkA(latestMiniDump.String(), stampedMiniDump.String(), nullptr))
-		{
-			MoveFileExA(
-				stampedMiniDump.String(),
-				latestMiniDump.String(),
-				MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-		}
-	}
+	CrashHandler_WriteMiniDumpFile(latestMiniDump.String(), m_pExceptionPointers);
 }
 
 //-----------------------------------------------------------------------------
