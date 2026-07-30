@@ -131,7 +131,6 @@ static bool CrashHandler_WriteMiniDumpFile(const char* const pszPath, EXCEPTION_
 
 	const MINIDUMP_TYPE dumpType = static_cast<MINIDUMP_TYPE>(
 		MiniDumpNormal |
-		MiniDumpWithDataSegs |
 		MiniDumpWithHandleData |
 		MiniDumpWithProcessThreadData |
 		MiniDumpWithThreadInfo |
