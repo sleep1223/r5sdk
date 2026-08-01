@@ -286,9 +286,10 @@ void CCrashHandler::FormatExceptionMemory()
 	const DWORD64 nCrashRva = nGameBase && pContext->Rip >= nGameBase ? pContext->Rip - nGameBase : 0;
 	m_Buffer.AppendFormat("\tgame_rva: 0x%llX\n", nCrashRva);
 
-	// These offsets describe the SQObjectPtr assignment used by the Squirrel
-	// interpreter. Other crashes still get the exception stack above.
-	if (nCrashRva < 0xB1D2D0 || nCrashRva >= 0xB1D320)
+	const bool bObjectAssignCrash = nCrashRva >= 0xB1D2D0 && nCrashRva < 0xB1D320;
+	const bool bTableLookupCrash = nCrashRva >= 0xB37990 && nCrashRva < 0xB379B0;
+
+	if (!bObjectAssignCrash && !bTableLookupCrash)
 	{
 		m_Buffer.Append("\tsqvm_targeted: false\n");
 		m_Buffer.Append("}\n");
@@ -296,23 +297,42 @@ void CCrashHandler::FormatExceptionMemory()
 	}
 
 	m_Buffer.Append("\tsqvm_targeted: true\n");
+	m_Buffer.AppendFormat("\tsqvm_case: %s\n", bObjectAssignCrash ? "object_assign" : "table_lookup");
 
+	const DWORD64 nSqVmAddress = bObjectAssignCrash ? pContext->Rsi : pContext->R11;
 	const DWORD64 nInstructionWindow = pContext->R14 >= 0x40 ? pContext->R14 - 0x40 : pContext->R14;
-	const DWORD64 nDestinationWindow = pContext->Rcx >= 0x40 ? pContext->Rcx - 0x40 : pContext->Rcx;
-	const DWORD64 nSourceWindow = pContext->Rdx >= 0x40 ? pContext->Rdx - 0x40 : pContext->Rdx;
 
-	FormatMemoryBlock("sqvm", pContext->Rsi, 0x180);
+	FormatMemoryBlock("sqvm", nSqVmAddress, 0x180);
 	FormatMemoryBlock("current_instruction", nInstructionWindow, 0x100);
-	FormatMemoryBlock("destination_object", nDestinationWindow, 0x80);
-	FormatMemoryBlock("source_object", nSourceWindow, 0x80);
+
+	if (bObjectAssignCrash)
+	{
+		const DWORD64 nDestinationWindow = pContext->Rcx >= 0x40 ? pContext->Rcx - 0x40 : pContext->Rcx;
+		const DWORD64 nSourceWindow = pContext->Rdx >= 0x40 ? pContext->Rdx - 0x40 : pContext->Rdx;
+		FormatMemoryBlock("destination_object", nDestinationWindow, 0x80);
+		FormatMemoryBlock("source_object", nSourceWindow, 0x80);
+	}
+	else
+	{
+		const DWORD64 nTableOutputWindow = pContext->Rsi >= 0x20 ? pContext->Rsi - 0x20 : pContext->Rsi;
+		FormatMemoryBlock("table_object", pContext->R10, 0x100);
+		FormatMemoryBlock("table_node", pContext->Rbx, 0x40);
+		FormatMemoryBlock("table_output", nTableOutputWindow, 0x60);
+		m_Buffer.AppendFormat(
+			"\ttable_lookup: node=0x%016llX invalid_ref=0x%016llX table=0x%016llX output=0x%016llX\n",
+			pContext->Rbx,
+			pContext->Rax,
+			pContext->R10,
+			pContext->Rsi);
+	}
 
 	DWORD64 nInstructionState = 0;
 	DWORD64 nLiteralBase = 0;
 	DWORD64 nStackBase = 0;
 	SIZE_T nBytesRead = 0;
 
-	if (pContext->Rsi &&
-		ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(pContext->Rsi + 0x40),
+	if (nSqVmAddress &&
+		ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(nSqVmAddress + 0x40),
 			&nInstructionState, sizeof(nInstructionState), &nBytesRead) &&
 		nBytesRead == sizeof(nInstructionState))
 	{
@@ -368,8 +388,8 @@ void CCrashHandler::FormatExceptionMemory()
 			functionProtoObject.nValue);
 	}
 
-	if (pContext->Rsi &&
-		ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(pContext->Rsi + 0x58),
+	if (nSqVmAddress &&
+		ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(nSqVmAddress + 0x58),
 			&nStackBase, sizeof(nStackBase), &nBytesRead) &&
 		nBytesRead == sizeof(nStackBase))
 	{
@@ -381,14 +401,26 @@ void CCrashHandler::FormatExceptionMemory()
 		instructionFields, sizeof(instructionFields), &nBytesRead) &&
 		nBytesRead == sizeof(instructionFields))
 	{
-		m_Buffer.AppendFormat(
-			"\tinstruction: op=%d source_index=%d destination_index=%d arg3=%d\n",
-			instructionFields[0],
-			instructionFields[1],
-			instructionFields[2],
-			instructionFields[3]);
+		if (bObjectAssignCrash)
+		{
+			m_Buffer.AppendFormat(
+				"\tinstruction: op=%d source_index=%d destination_index=%d arg3=%d\n",
+				instructionFields[0],
+				instructionFields[1],
+				instructionFields[2],
+				instructionFields[3]);
+		}
+		else
+		{
+			m_Buffer.AppendFormat(
+				"\tinstruction: op=%d arg0=%d arg1=%d arg2=%d\n",
+				instructionFields[0],
+				instructionFields[1],
+				instructionFields[2],
+				instructionFields[3]);
+		}
 
-		if (nLiteralBase)
+		if (bObjectAssignCrash && nLiteralBase)
 		{
 			const DWORD64 nComputedSource = static_cast<DWORD64>(
 				static_cast<LONGLONG>(nLiteralBase) + static_cast<LONGLONG>(instructionFields[1]) * 0x10);
@@ -422,7 +454,7 @@ void CCrashHandler::FormatExceptionMemory()
 			}
 		}
 
-		if (nStackBase)
+		if (bObjectAssignCrash && nStackBase)
 		{
 			const DWORD64 nComputedDestination = static_cast<DWORD64>(
 				static_cast<LONGLONG>(nStackBase) + static_cast<LONGLONG>(instructionFields[2]) * 0x10);
