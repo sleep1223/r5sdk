@@ -81,7 +81,6 @@ global function bEnc
 #endif
 
 bool matchReportPinTelemetryInitLogged = false
-bool matchReportPinTelemetryKillLogged = false
 bool matchReportPinTelemetryDamageLogged = false
 
 #if STUB
@@ -5421,14 +5420,6 @@ void function PIN_PlayerRevived( entity injured, entity healer )
 
 void function PIN_PlayerKilled( entity victim, entity attacker, var damageInfo )
 {
-	if ( !matchReportPinTelemetryKillLogged )
-	{
-		matchReportPinTelemetryKillLogged = true
-		MatchReportWeaponStats_DebugNote( "PIN_PlayerKilled tracker" )
-	}
-	if ( MatchReportWeaponStats_IsInitialized() )
-		MatchReportWeaponStats_RecordPlayerKilled( victim, attacker, damageInfo )
-
 	if ( file.bTrackerEnabled && TrackerIsLogging__internal() && IsValid( victim ) && victim.IsPlayer() && IsValid( attacker ) )
 	{
 		if( !damageInfo )
@@ -6070,13 +6061,6 @@ void function PIN_PlayerDowned( entity victim, entity attacker, var damageInfo )
 void function PIN_PlayerRevived( entity injured, entity healer ){}
 void function PIN_PlayerKilled( entity victim, entity attacker, var damageInfo )
 {
-	if ( !matchReportPinTelemetryKillLogged )
-	{
-		matchReportPinTelemetryKillLogged = true
-		MatchReportWeaponStats_DebugNote( "PIN_PlayerKilled stub" )
-	}
-	if ( MatchReportWeaponStats_IsInitialized() )
-		MatchReportWeaponStats_RecordPlayerKilled( victim, attacker, damageInfo )
 }
 void function PIN_PlanePath( vector startPos, vector endPos, float duration ){}
 void function PIN_SetGameStartTime(){}
