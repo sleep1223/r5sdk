@@ -2559,6 +2559,8 @@ playlists
 				description										"1v1 Vamp"
 				abbreviation					   				"1v1 Vamp"
 				lobbytitle						 				"1v1 Vamp"
+				enable_bullet_slow								1
+				bullet_slow_affects_fortified			1 // 0 = official immunity | 1 = Fortified is slowed
 			
 				image							  				worlds_edge
 				video							  				worlds_edge
@@ -2848,6 +2850,8 @@ playlists
 				description										"1v1 LG Duels"
 				abbreviation					   				"1v1 LG Duels"
 				lobbytitle						 				"1v1 LG Duels"
+				enable_bullet_slow								1
+				bullet_slow_affects_fortified			1 // 0 = official immunity | 1 = Fortified is slowed
 			
 				image							  				worlds_edge
 				video							  				worlds_edge
