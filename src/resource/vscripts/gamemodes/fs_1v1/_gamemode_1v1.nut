@@ -3830,7 +3830,7 @@ void function FS_1v1_StartGame_THREAD( LocPair waitingRoom )
 		printt( "CHAMPION SCREEN FINISHED" )
 	#endif
 
-	printt( "[FS_1V1] isolated coaching frame enabled" )
+	printt( "[FS_1V1] isolated main loop frame enabled" )
 	thread FS_1v1_MainLoop_THREAD( waitingRoom )
 }
 
@@ -3985,7 +3985,18 @@ void function FS_1v1_MainLoop_THREAD( LocPair waitingRoomLocation )
 	for( ; ; )
 	{
 		WaitFrame()
+		if( !FS_1v1_PrepareCoachingMatch() )
+			continue
 
+		FS_1v1_ProcessMainLoopFrame( waitingRoomLocation )
+	}
+}
+
+void function FS_1v1_ProcessMainLoopFrame( LocPair waitingRoomLocation )
+{
+	// Preserve outer-loop continue behavior without suspending this large frame.
+	for( int framePass = 0; framePass < 1; framePass++ )
+	{
 		/////////////////////
 		// GROUPS CLEAN UP //
 		/////////////////////
@@ -4275,9 +4286,6 @@ void function FS_1v1_MainLoop_THREAD( LocPair waitingRoomLocation )
 		// ACTUAL MATCHMAKING //
 		////////////////////////
 		{
-			if( !FS_1v1_PrepareCoachingMatch() )
-				continue
-
 			soloGroupStruct newGroup
 			bool bMatchFound = false
 
@@ -4598,8 +4606,8 @@ void function FS_1v1_MainLoop_THREAD( LocPair waitingRoomLocation )
 
 			} //not waiting
 		}
-	}//for( ; ; ) -- main loop
-}//thread
+	} // one frame pass
+}
 
 void function FS_1v1_ChoachingModeMatchmakingStart()
 {
