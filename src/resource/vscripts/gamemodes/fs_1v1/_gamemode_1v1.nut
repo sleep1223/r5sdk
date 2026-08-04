@@ -3830,7 +3830,7 @@ void function FS_1v1_StartGame_THREAD( LocPair waitingRoom )
 		printt( "CHAMPION SCREEN FINISHED" )
 	#endif
 
-	printt( "[FS_1V1] isolated main loop frame enabled" )
+	printt( "[FS_1V1] isolated main and challenge frames enabled" )
 	thread FS_1v1_MainLoop_THREAD( waitingRoom )
 }
 
@@ -3990,6 +3990,55 @@ void function FS_1v1_MainLoop_THREAD( LocPair waitingRoomLocation )
 
 		FS_1v1_ProcessMainLoopFrame( waitingRoomLocation )
 	}
+}
+
+bool function FS_1v1_TryCreateChallengeMatch( soloGroupStruct newGroup )
+{
+	foreach ( playerHandle, playerWaiting in file.soloPlayersWaiting )
+	{
+		if( !IsValid( playerWaiting ) )
+			continue
+
+		entity playerSelf = playerWaiting.player
+		if( !IsValid( playerSelf ) || !isInputAllowed( playerSelf ) )
+		{
+			RefreshPlayerInputEligibility( playerSelf )
+			continue
+		}
+
+		if( bIsCoachingMode() || !IsPlayerPendingChallenge( playerSelf ) )
+			continue
+
+		entity lockOpponent = getLock1v1OpponentOfPlayer( playerSelf )
+		if( !IsValid( lockOpponent ) || !isInputAllowed( lockOpponent ) )
+		{
+			#if DEVELOPER
+				sqprint( "waiting for lockmatch TIMEOUT matching" )
+			#endif
+
+			continue
+		}
+
+		newGroup.player1 = playerSelf
+		newGroup.player2 = lockOpponent
+		newGroup.IsKeep = true
+
+		newGroup.player1.p.waitingFor1v1 = false
+		newGroup.player2.p.waitingFor1v1 = false
+
+		#if DEVELOPER
+			printw( "MATCH CREATED VIA CHALLENGE" )
+		#endif
+
+		newGroup.player1.Signal( "ChallengeStarted" )
+		newGroup.player2.Signal( "ChallengeStarted" )
+
+		LocalMsg( newGroup.player1, "#FS_ChalStarted" )
+		LocalMsg( newGroup.player2, "#FS_ChalStarted" )
+		return true
+	}
+
+	return false
 }
 
 void function FS_1v1_ProcessMainLoopFrame( LocPair waitingRoomLocation )
@@ -4292,53 +4341,7 @@ void function FS_1v1_ProcessMainLoopFrame( LocPair waitingRoomLocation )
 			///////////////////////////////////
 			// CREATE MATCHES VIA CHALLENGES //
 			///////////////////////////////////
-			foreach ( playerHandle, playerWaiting in file.soloPlayersWaiting )
-			{
-				if( !IsValid( playerWaiting ) )
-					continue
-
-				entity playerSelf = playerWaiting.player
-				if( !IsValid( playerSelf ) || !isInputAllowed( playerSelf ) )
-				{
-					RefreshPlayerInputEligibility( playerSelf )
-					continue
-				}
-
-				if( !bIsCoachingMode() && IsPlayerPendingChallenge( playerSelf ) )
-				{
-					entity Lock1v1Opponent = getLock1v1OpponentOfPlayer( playerSelf )
-					if ( IsValid( Lock1v1Opponent ) && isInputAllowed( Lock1v1Opponent ) )
-					{
-						newGroup.player1 = playerSelf
-						newGroup.player2 = Lock1v1Opponent
-
-						#if DEVELOPER
-							printw( "MATCH CREATED VIA CHALLENGE" )
-						#endif
-
-						newGroup.IsKeep = true
-						newGroup.player1.p.waitingFor1v1 = false
-						newGroup.player2.p.waitingFor1v1 = false
-
-						LocalMsg( newGroup.player1, "#FS_ChalStarted" )
-						LocalMsg( newGroup.player2, "#FS_ChalStarted" )
-
-						newGroup.player1.Signal( "ChallengeStarted" )
-						newGroup.player2.Signal( "ChallengeStarted" )
-
-						bMatchFound = true
-						break
-					}
-					else
-					{
-						#if DEVELOPER
-							sqprint( "waiting for lockmatch TIMEOUT matching" )
-						#endif
-
-						continue //(mk): these guys are still waiting for each other
-					}
-				}
-			}
+			bMatchFound = FS_1v1_TryCreateChallengeMatch( newGroup )
 
 			/////////////////////////////////////////////////
 			// SET RELEVANT MATCHMAKING VARS FOR IBMM/SBMM //

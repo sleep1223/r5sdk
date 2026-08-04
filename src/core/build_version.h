@@ -2,4 +2,4 @@
 
 // Increment this number for every code change that should be identifiable in
 // server startup logs.
-static constexpr unsigned int SDK_INTERNAL_BUILD_NUMBER = 2026080301u;
+static constexpr unsigned int SDK_INTERNAL_BUILD_NUMBER = 2026080401u;
