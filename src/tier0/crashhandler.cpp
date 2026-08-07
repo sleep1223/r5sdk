@@ -359,17 +359,47 @@ void CCrashHandler::FormatExceptionMemory()
 		DWORD64 nValue;
 	};
 
+	SQObjectSnapshot frameObject = {};
+	SQObjectSnapshot directFunctionProtoObject = {};
 	SQObjectSnapshot closureObject = {};
 	SQObjectSnapshot functionProtoObject = {};
 	SQObjectSnapshot sourceNameObject = {};
 	SQObjectSnapshot functionNameObject = {};
 
-	if (nInstructionState &&
-		CrashHandler_ReadMemory(nInstructionState + 0x10, &closureObject, sizeof(closureObject)) &&
-		closureObject.nType == 0x08000100 &&
-		CrashHandler_ReadMemory(closureObject.nValue + 0x50, &functionProtoObject, sizeof(functionProtoObject)) &&
-		functionProtoObject.nType == 0x08002000)
+	const bool bHasFrameObject = nInstructionState &&
+		CrashHandler_ReadMemory(nInstructionState + 0x10, &frameObject, sizeof(frameObject));
+	const bool bHasDirectFunctionProto = nInstructionState &&
+		CrashHandler_ReadMemory(nInstructionState + 0x20, &directFunctionProtoObject, sizeof(directFunctionProtoObject)) &&
+		directFunctionProtoObject.nType == 0x08002000;
+	const char* pszFrameLayout = "unavailable";
+
+	if (bHasFrameObject && frameObject.nType == 0x08000100)
 	{
+		closureObject = frameObject;
+		if (CrashHandler_ReadMemory(closureObject.nValue + 0x50, &functionProtoObject, sizeof(functionProtoObject)) &&
+			functionProtoObject.nType == 0x08002000)
+		{
+			pszFrameLayout = "closure";
+		}
+	}
+
+	if (functionProtoObject.nType != 0x08002000 && bHasDirectFunctionProto)
+	{
+		functionProtoObject = directFunctionProtoObject;
+		pszFrameLayout = "direct_funcproto";
+	}
+
+	m_Buffer.AppendFormat(
+		"\tscript_frame_probe: layout=%s slot10_type=0x%08llX slot10_value=0x%016llX slot20_type=0x%08llX slot20_value=0x%016llX\n",
+		pszFrameLayout,
+		bHasFrameObject ? frameObject.nType : 0,
+		bHasFrameObject ? frameObject.nValue : 0,
+		directFunctionProtoObject.nType,
+		directFunctionProtoObject.nValue);
+
+	if (functionProtoObject.nType == 0x08002000)
+	{
+		FormatMemoryBlock("sqvm_function_proto", functionProtoObject.nValue, 0x100);
 		CrashHandler_ReadMemory(functionProtoObject.nValue + 0x48, &sourceNameObject, sizeof(sourceNameObject));
 		CrashHandler_ReadMemory(functionProtoObject.nValue + 0x58, &functionNameObject, sizeof(functionNameObject));
 

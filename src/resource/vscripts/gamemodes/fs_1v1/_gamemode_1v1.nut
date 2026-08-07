@@ -3830,7 +3830,7 @@ void function FS_1v1_StartGame_THREAD( LocPair waitingRoom )
 		printt( "CHAMPION SCREEN FINISHED" )
 	#endif
 
-	printt( "[FS_1V1] isolated main and challenge frames enabled" )
+	printt( "[FS_1V1] isolated main loop stages enabled" )
 	thread FS_1v1_MainLoop_THREAD( waitingRoom )
 }
 
@@ -4041,11 +4041,8 @@ bool function FS_1v1_TryCreateChallengeMatch( soloGroupStruct newGroup )
 	return false
 }
 
-void function FS_1v1_ProcessMainLoopFrame( LocPair waitingRoomLocation )
+void function FS_1v1_ProcessGroupsFrame()
 {
-	// Preserve outer-loop continue behavior without suspending this large frame.
-	for( int framePass = 0; framePass < 1; framePass++ )
-	{
 		/////////////////////
 		// GROUPS CLEAN UP //
 		/////////////////////
@@ -4193,7 +4190,10 @@ void function FS_1v1_ProcessMainLoopFrame( LocPair waitingRoomLocation )
 				removeGroup( group )
 			}
 		}
+	}
 
+void function FS_1v1_ProcessRestingPlayersFrame()
+{
 		////////////////////////////////////////
 		// CHECK IF A RESTING PLAYER HAS DIED //
 		////////////////////////////////////////
@@ -4214,7 +4214,10 @@ void function FS_1v1_ProcessMainLoopFrame( LocPair waitingRoomLocation )
 			if( !IsAlive( restingPlayerEntity ) )
 				thread respawnInSoloMode( restingPlayerEntity )
 		}
+	}
 
+void function FS_1v1_ProcessWaitingRoomPlayersFrame( LocPair waitingRoomLocation )
+{
 		///////////////////////////////////////////////
 		// PLAYERS SHOULDN'T GET OUT OF WAITING ROOM //
 		///////////////////////////////////////////////
@@ -4254,7 +4257,10 @@ void function FS_1v1_ProcessMainLoopFrame( LocPair waitingRoomLocation )
 				}
 			}
 		}
+	}
 
+bool function FS_1v1_ProcessWaitingNotificationsFrame()
+{
 		/////////////////////////
 		// NOTIFICATIONS PANEL //
 		/////////////////////////
@@ -4274,7 +4280,7 @@ void function FS_1v1_ProcessMainLoopFrame( LocPair waitingRoomLocation )
 				}
 			}
 
-			continue
+			return true
 		}
 		else if ( file.APlayerHasMessage )
 		{
@@ -4290,6 +4296,11 @@ void function FS_1v1_ProcessMainLoopFrame( LocPair waitingRoomLocation )
 			file.APlayerHasMessage = false;
 		}
 
+		return false
+	}
+
+void function FS_1v1_CleanupAcceptedChallengesFrame()
+{
 		/////////////////////////
 		// CHALLENGES CLEAN UP //
 		/////////////////////////
@@ -4324,12 +4335,59 @@ void function FS_1v1_ProcessMainLoopFrame( LocPair waitingRoomLocation )
 
 			deletions.resize(0)
 		}
+	}
 
+void function FS_1v1_FinalizeMatchedGroup( soloGroupStruct newGroup )
+{
+	if( newGroup.player1.p.waitingFor1v1 || newGroup.player2.p.waitingFor1v1 )
+		return
+
+	array<entity> players = [newGroup.player1,newGroup.player2]
+
+	newGroup.player1_handle = newGroup.player1.p.handle
+	newGroup.player2_handle = newGroup.player2.p.handle
+	newGroup.inputLocked = GroupIsLockable( newGroup )
+
+	soloModePlayerToInProgressList( newGroup )
+
+	foreach ( index, eachPlayer in players )
+	{
+		LocalEventMsg( eachPlayer, "", "", 1 )
+		EnableOffhandWeapons( eachPlayer )
+		thread respawnInSoloMode( eachPlayer, index )
+	}
+
+	GiveWeaponsToGroup( players, newGroup )
+	FS_SetRealmForPlayer( newGroup.player1, newGroup.slotIndex )
+	FS_SetRealmForPlayer( newGroup.player2, newGroup.slotIndex )
+
+	string ibmmLockTypeToken = newGroup.inputLocked ? "#FS_InputLocked" : "#FS_CouldNotLock"
+	if ( newGroup.inputLocked )
+		thread InputWatchdog( newGroup.player1, newGroup.player2, newGroup )
+
+	if ( newGroup.player1.p.IBMM_grace_period <= 0 && !newGroup.inputLocked )
+		ibmmLockTypeToken = "#FS_AnyInput"
+
+	if( newGroup.player1.p.enable_input_banner )
+		IBMM_Notify( newGroup.player1, ibmmLockTypeToken, newGroup.player2.p.input )
+
+	if( !newGroup.inputLocked )
+		ibmmLockTypeToken = "#FS_CouldNotLock"
+
+	if ( newGroup.player2.p.IBMM_grace_period <= 0 && !newGroup.inputLocked )
+		ibmmLockTypeToken = "#FS_AnyInput"
+
+	if( newGroup.player2.p.enable_input_banner )
+		IBMM_Notify( newGroup.player2, ibmmLockTypeToken, newGroup.player1.p.input )
+}
+
+void function FS_1v1_ProcessMatchmakingFrame()
+{
 		//////////////////////////////////////
 		// CONDITIONS THAT STOP MATCHMAKING //
 		//////////////////////////////////////
 		if( GetScoreboardShowingState() || GetChampionShowingState() || GetTDMState() != eTDMState.IN_PROGRESS )
-			continue
+			return
 
 		////////////////////////
 		// ACTUAL MATCHMAKING //
@@ -4378,7 +4436,7 @@ void function FS_1v1_ProcessMainLoopFrame( LocPair waitingRoomLocation )
 					if( !isInputAllowed( newGroup.player1 ) )
 					{
 						RefreshPlayerInputEligibility( newGroup.player1 )
-						continue
+						return
 					}
 
 					//sqprint("Player 1 found: " + newGroup.player1.GetPlayerName() + " waiting for same input or IBMM grace period time out")
@@ -4540,76 +4598,24 @@ void function FS_1v1_ProcessMainLoopFrame( LocPair waitingRoomLocation )
 				if ( IsValid( newGroup.player2 ) )
 					soloModePlayerToWaitingList( newGroup.player2 )
 
-				continue
+				return
 			}
 
-			////////////////////////////
-			// ACTUAL GROUPS CREATION //
-			////////////////////////////
-			//don't pair players if they are waiting for their chal player
-			if( !newGroup.player1.p.waitingFor1v1 && !newGroup.player2.p.waitingFor1v1 )
-			{
-				//already matched two players
-				array<entity> players = [newGroup.player1,newGroup.player2]
-
-				//set handles to group for cleanup on invalid player
-				newGroup.player1_handle = newGroup.player1.p.handle
-				newGroup.player2_handle = newGroup.player2.p.handle
-
-				if( GroupIsLockable( newGroup ) )
-					newGroup.inputLocked = true
-				else
-					newGroup.inputLocked = false
-
-				//DEV_SetBreakPoint()
-				soloModePlayerToInProgressList( newGroup )
-
-				foreach ( index, eachPlayer in players )
-				{
-					LocalEventMsg( eachPlayer, "", "", 1 ) //reset in queue msg
-					EnableOffhandWeapons( eachPlayer )
-					thread respawnInSoloMode( eachPlayer, index )
-				}
-
-				GiveWeaponsToGroup( players, newGroup )
-
-				FS_SetRealmForPlayer( newGroup.player1, newGroup.slotIndex )
-				FS_SetRealmForPlayer( newGroup.player2, newGroup.slotIndex )
-
-				string ibmmLockTypeToken = "";
-
-				if ( newGroup.inputLocked == true )
-				{
-					thread InputWatchdog( newGroup.player1, newGroup.player2, newGroup )
-					ibmmLockTypeToken = "#FS_InputLocked"
-				}
-				else
-				{
-					ibmmLockTypeToken = "#FS_CouldNotLock"
-				}
-
-				//check for player 1's lock setting and that group isnt locked
-				if ( newGroup.player1.p.IBMM_grace_period <= 0 && newGroup.inputLocked == false )
-					ibmmLockTypeToken = "#FS_AnyInput"
-
-				//message player 1
-				if( newGroup.player1.p.enable_input_banner )
-					IBMM_Notify( newGroup.player1, ibmmLockTypeToken, newGroup.player2.p.input )
-
-				if( newGroup.inputLocked == false ) //(mk): reset base token
-					ibmmLockTypeToken = "#FS_CouldNotLock"
-
-				//check for player 2 lock setting
-				if ( newGroup.player2.p.IBMM_grace_period <= 0 && newGroup.inputLocked == false )
-					ibmmLockTypeToken = "#FS_AnyInput"
-
-				//msg player 2
-				if( newGroup.player2.p.enable_input_banner )
-					IBMM_Notify( newGroup.player2, ibmmLockTypeToken, newGroup.player1.p.input )
-
-			} //not waiting
+			FS_1v1_FinalizeMatchedGroup( newGroup )
 		}
-	} // one frame pass
+}
+
+void function FS_1v1_ProcessMainLoopFrame( LocPair waitingRoomLocation )
+{
+	FS_1v1_ProcessGroupsFrame()
+	FS_1v1_ProcessRestingPlayersFrame()
+	FS_1v1_ProcessWaitingRoomPlayersFrame( waitingRoomLocation )
+
+	if( FS_1v1_ProcessWaitingNotificationsFrame() )
+		return
+
+	FS_1v1_CleanupAcceptedChallengesFrame()
+	FS_1v1_ProcessMatchmakingFrame()
 }
 
 void function FS_1v1_ChoachingModeMatchmakingStart()
